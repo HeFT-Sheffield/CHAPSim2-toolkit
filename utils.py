@@ -114,26 +114,30 @@ class LiquidLithiumProperties:
         H_ref = (4754 * T_ref - (0.925 * T_ref**2) / 2 + (0.000291 * T_ref**3) / 3) / 1000
         return H_abs - H_ref
     
-    def temperature_from_enthalpy(self, H):
+    def temperature_from_enthalpy(self, H, ref_temp=None):
         """
         Invert enthalpy relation to find absolute temperature from enthalpy.
         
         Handles both scalar and array inputs of enthalpy values.
         """
-        # Vectorize to handle array inputs
+        
+        h_ref = None
+        if ref_temp is not None:
+            h_ref = self.enthalpy(ref_temp)  # find reference enthalpy
+
         if np.ndim(H) == 0:
             # Scalar case
             h_val = float(H)
-            return self._temperature_from_enthalpy_scalar(h_val)
+            return self._temperature_from_enthalpy_scalar(h_val, h_ref)
         else:
             # Array case
             H_arr = np.asarray(H).ravel()
             result = np.zeros_like(H_arr, dtype=float)
             for i, h in enumerate(H_arr):
-                result[i] = self._temperature_from_enthalpy_scalar(float(h))
+                result[i] = self._temperature_from_enthalpy_scalar(float(h), h_ref)
             return result.reshape(np.asarray(H).shape)
     
-    def _temperature_from_enthalpy_scalar(self, H):
+    def _temperature_from_enthalpy_scalar(self, H, h_ref=None):
         """
         Invert enthalpy relation for a single scalar enthalpy value.
         """
@@ -141,7 +145,7 @@ class LiquidLithiumProperties:
         a = 0.000291 / 3.0
         b = -0.925 / 2.0
         c = 4754.0
-        d = -1000.0 * H
+        d = -H * h_ref if h_ref is not None else -H
 
         roots = np.roots([a, b, c, d])
         real_roots = roots[np.abs(roots.imag) < 1e-8].real
@@ -150,7 +154,6 @@ class LiquidLithiumProperties:
         if valid_roots.size == 0:
             raise ValueError(f"No physical temperature root found for enthalpy H={H}.")
 
-        # For robustness, pick the root with the smallest residual in enthalpy.
         residuals = np.abs([self.enthalpy(T) - H for T in valid_roots])
         return float(valid_roots[np.argmin(residuals)])
     

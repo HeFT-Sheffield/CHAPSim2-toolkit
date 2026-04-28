@@ -903,9 +903,9 @@ class HeatTransferCoefficient(Profiles):
     def _case_value(self, values: List[float], case: str) -> float:
         return float(values[self.cases.index(case)]) if len(values) > 1 else float(values[0])
 
-    def _compute_h_profile(self, temp: np.ndarray, fuh: np.ndarray, fu: np.ndarray, heat_flux: float, y_coords: Optional[np.ndarray]) -> np.ndarray:
+    def _compute_h_profile(self, temp: np.ndarray, ref_temp: float, fuh: np.ndarray, fu: np.ndarray, heat_flux: float, y_coords: Optional[np.ndarray]) -> np.ndarray:
         """Compute heat transfer coefficient profile from thermo variables."""
-        return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=y_coords, fluid=self.fluid))
+        return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coords=y_coords, fluid=self.fluid))
 
     def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
         if not data_loader.has(case, 'T', timestep):
@@ -922,12 +922,10 @@ class HeatTransferCoefficient(Profiles):
             return False
 
         heat_flux = self._case_value(self.wall_heat_flux, case)
-        temp_ref = self._case_value(self.ref_temp, case)
+        ref_temp = self._case_value(self.ref_temp, case)
         y_coords = getattr(data_loader, 'y_coords', None)
         
-        temp_dim = op.dimensionalize_temperature(temp_data, temp_ref, self.norm_temp_by_ref_temp)
-        
-        self.raw_results[(case, timestep)] = self._compute_h_profile(temp_dim, fuh_data, fu_data, heat_flux, y_coords)
+        self.raw_results[(case, timestep)] = self._compute_h_profile(temp_data, ref_temp, fuh_data, fu_data, heat_flux, y_coords)
         return True
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
@@ -952,8 +950,8 @@ class NusseltNumber(HeatTransferCoefficient):
 
         # Gather all required thermo variables
         temp_data = data_loader.get(case, 'T', timestep)
-        fuh_data = data_loader.get(case, 'fuh', timestep)
-        fu_data = data_loader.get(case, 'fu', timestep)
+        fuh_data = data_loader.get(case, 'fuh1', timestep)
+        fu_data = data_loader.get(case, 'fu1', timestep)
 
         if fuh_data is None or fu_data is None:
             print(f"Missing enthalpy data (fuh, fu) for {self.name} calculation: {case}, {timestep}")
@@ -961,13 +959,11 @@ class NusseltNumber(HeatTransferCoefficient):
 
         heat_flux = self._case_value(self.wall_heat_flux, case)
         ref_len = self._case_value(self.ref_length, case)
-        temp_ref = self._case_value(self.ref_temp, case)
+        ref_temp = self._case_value(self.ref_temp, case)
         y_coords = getattr(data_loader, 'y_coords', None)
-        
-        temp_dim = op.dimensionalize_temperature(temp_data, temp_ref, self.norm_temp_by_ref_temp)
 
-        h_profile = self._compute_h_profile(temp_dim, fuh_data, fu_data, heat_flux, y_coords)
-        k_ref = float(self.fluid.thermal_conductivity(temp_ref))
+        h_profile = self._compute_h_profile(temp_data, ref_temp, fuh_data, fu_data, heat_flux, y_coords)
+        k_ref = float(self.fluid.thermal_conductivity(ref_temp)) # this is wrong, should be based on bulk temp
         fluid_props = {'k': k_ref}
 
         if np.ndim(h_profile) == 0:

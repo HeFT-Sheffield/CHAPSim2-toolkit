@@ -178,7 +178,7 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
 # Thermo statistics functions
 # =====================================================================================================================================================
 
-def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None, fluid=None):
+def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coords=None, fluid=None):
     """Compute wall heat-transfer coefficient using a mass flux average of enthalpy.
     
     Args:
@@ -204,14 +204,15 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None, fl
         fluid = utils.get_fluid_properties('lithium')
     
     wall_temp = interpolate_wall_point(temp, y_coords=y_coords, wall='lower')
-
+    
     if temp.ndim == 3:
         wall_temp = wall_temp.mean(axis=0)
         fuh = fuh.mean(axis=0)
         fu = fu.mean(axis=0)
 
-    bulk_enthalpy_x = np.trapz(fuh, y_coords, axis=0) / np.trapz(fu, y_coords, axis=0)
-    fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x)
+    bulk_enthalpy_x = np.trapz(fuh, y_coords, axis=0) / np.trapz(fu, y_coords, axis=0) # non dim
+    fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x, ref_temp) # returns dimensional fluid temp
+    wall_temp =  wall_temp * ref_temp # dimensionalise wall temp
 
     return heat_flux / (wall_temp - fluid_temp)
 
