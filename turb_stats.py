@@ -939,7 +939,7 @@ class NusseltNumber(HeatTransferCoefficient):
 
     def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
                  ref_length: List[float], working_fluid: str, norm_temp_by_ref_temp: bool):
-        super().__init__(cases, ref_temp, wall_heat_flux, norm_temp_by_ref_temp)
+        super().__init__(cases, ref_temp, wall_heat_flux, norm_temp_by_ref_temp, working_fluid)
         self.name = 'nusselt_number'
         self.label = 'Local Nusselt Number'
         self.ref_length = ref_length
