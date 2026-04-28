@@ -1,7 +1,8 @@
 import numpy as np
+import utils
 
 # =====================================================================================================================================================
-# Helper: extract value from native array or legacy 3-column format
+# General Functions
 # =====================================================================================================================================================
 
 def _extract_val(data):
@@ -32,6 +33,63 @@ def _compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
     u_tau_sq = abs(tau_w)
     u_tau = np.sqrt(u_tau_sq)
     return u_tau, u_tau_sq, tau_w
+
+def interpolate_wall_point(cell_data, y_coords=None, wall='lower'):
+    """Interpolate a wall value from the two nearest cell-centre values.
+
+    The wall-normal direction is assumed to be axis 0 for native arrays.
+    Legacy 3-column arrays ``[idx, y, value]`` are also supported.
+
+    Args:
+        cell_data: Field values on cell centres.
+        y_coords: Optional wall-normal cell-centre coordinates for native arrays.
+        wall: Which wall to interpolate from: ``'lower'`` or ``'upper'``.
+
+    Returns:
+        Interpolated wall value with the same trailing shape as one y-slice.
+    """
+    if wall not in ('lower', 'upper'):
+        raise ValueError("wall must be either 'lower' or 'upper'.")
+
+    arr = np.asarray(cell_data)
+
+    # text profile format: [idx, y, value]
+    if arr.ndim == 2 and arr.shape[1] == 3:
+        y = arr[:, 1]
+        val = arr[:, 2]
+        if wall == 'lower':
+            y0, y1 = float(y[0]), float(y[1])
+            v0, v1 = val[0], val[1]
+        else:
+            y0, y1 = float(y[-1]), float(y[-2])
+            v0, v1 = val[-1], val[-2]
+    else:
+        if arr.shape[0] < 2:
+            raise ValueError('Need at least two wall-normal cells for near-wall interpolation.')
+
+        if wall == 'lower':
+            v0, v1 = arr[0], arr[1]
+        else:
+            v0, v1 = arr[-1], arr[-2]
+
+        if y_coords is not None:
+            if wall == 'lower':
+                y0, y1 = float(y_coords[0]), float(y_coords[1])
+            else:
+                y0, y1 = float(y_coords[-1]), float(y_coords[-2])
+        else:
+            # Uniform spacing fallback for data without explicit y-coordinates.
+            y0, y1 = 0.0, 1.0
+
+    dy01 = y1 - y0
+    if dy01 == 0.0:
+        raise ValueError('Invalid wall-normal coordinates: first two points have zero spacing.')
+
+    y_wall = y0 - 0.5 * dy01
+
+    slope = (v1 - v0) / dy01
+    wall_value = v0 + slope * (y_wall - y0)
+    return wall_value
 
 # =====================================================================================================================================================
 # Reynolds number functions
@@ -91,68 +149,6 @@ def compute_tke(u_prime_sq, v_prime_sq, w_prime_sq):
 def compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0):
     return tau_w / (0.5 * ref_rho * ref_bulk_velocity**2)
 
-# =====================================================================================================================================================
-# Thermo statistics functions
-# =====================================================================================================================================================
-
-def interpolate_wall_point(cell_data, y_coords=None, wall='lower'):
-    """Interpolate a wall value from the two nearest cell-centre values.
-
-    The wall-normal direction is assumed to be axis 0 for native arrays.
-    Legacy 3-column arrays ``[idx, y, value]`` are also supported.
-
-    Args:
-        cell_data: Field values on cell centres.
-        y_coords: Optional wall-normal cell-centre coordinates for native arrays.
-        wall: Which wall to interpolate from: ``'lower'`` or ``'upper'``.
-
-    Returns:
-        Interpolated wall value with the same trailing shape as one y-slice.
-    """
-    if wall not in ('lower', 'upper'):
-        raise ValueError("wall must be either 'lower' or 'upper'.")
-
-    arr = np.asarray(cell_data)
-
-    # Legacy profile format: [idx, y, value]
-    if arr.ndim == 2 and arr.shape[1] == 3:
-        y = arr[:, 1]
-        val = arr[:, 2]
-        if wall == 'lower':
-            y0, y1 = float(y[0]), float(y[1])
-            v0, v1 = val[0], val[1]
-        else:
-            y0, y1 = float(y[-1]), float(y[-2])
-            v0, v1 = val[-1], val[-2]
-    else:
-        if arr.shape[0] < 2:
-            raise ValueError('Need at least two wall-normal cells for near-wall interpolation.')
-
-        if wall == 'lower':
-            v0, v1 = arr[0], arr[1]
-        else:
-            v0, v1 = arr[-1], arr[-2]
-
-        if y_coords is not None:
-            if wall == 'lower':
-                y0, y1 = float(y_coords[0]), float(y_coords[1])
-            else:
-                y0, y1 = float(y_coords[-1]), float(y_coords[-2])
-        else:
-            # Unit spacing fallback for data without explicit y-coordinates.
-            y0, y1 = 0.0, 1.0
-
-    dy01 = y1 - y0
-    if dy01 == 0.0:
-        raise ValueError('Invalid wall-normal coordinates: first two points have zero spacing.')
-
-    y_wall = y0 - 0.5 * dy01
-
-    slope = (v1 - v0) / dy01
-    wall_value = v0 + slope * (y_wall - y0)
-    return wall_value
-
-
 def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
     """Compute wall shear stress from near-wall interpolated velocity points."""
     arr = np.asarray(ux_data)
@@ -178,14 +174,44 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
     mu = 1.0 / float(Re_bulk)
     return mu * du_dy_wall
 
-def compute_wall_heat_transfer_coeff(heat_flux, temp, y_coords=None):
-    """Compute wall heat-transfer coefficient using opposite-wall fluid temperature."""
+# =====================================================================================================================================================
+# Thermo statistics functions
+# =====================================================================================================================================================
+
+def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None):
+    """Compute wall heat-transfer coefficient using a mass flux average of enthalpy.
+    
+    Args:
+        heat_flux: Wall heat flux value
+        temp: Temperature field (1D, 2D, or 3D array)
+        fuh: Enthalpy flux field (same shape as temp)
+        fu: Mass flux field (same shape as temp)
+        y_coords: Wall-normal coordinates for integration
+        
+    Returns:
+        Heat transfer coefficient (scalar or 1D array depending on input dims)
+    """
+    temp = np.asarray(temp)
+    fuh = np.asarray(fuh)
+    fu = np.asarray(fu)
+    
+    if y_coords is None:
+        raise ValueError("y_coords is required for integration.")
+    
     wall_temp = interpolate_wall_point(temp, y_coords=y_coords, wall='lower')
-    fluid_temp = interpolate_wall_point(temp, y_coords=y_coords, wall='upper')
+
+    if temp.ndim == 3:
+        wall_temp = wall_temp.mean(axis=0)
+        fuh = fuh.mean(axis=0)
+        fu = fu.mean(axis=0)
+
+    bulk_enthalpy_x = np.trapezoid(fuh, y_coords, axis=0) / np.trapezoid(fu, y_coords, axis=0)
+    fluid_temp = utils.temperature_from_enthalpy(bulk_enthalpy_x)
+
     return heat_flux / (wall_temp - fluid_temp)
 
 def compute_wall_Nusselt_number(heat_transfer_coeff, ref_length, ref_fluid_properties):
-    return heat_transfer_coeff * ref_length / ref_fluid_properties['k']
+    return ( heat_transfer_coeff * ref_length ) / ref_fluid_properties['k']
 
 # =====================================================================================================================================================
 # TKE Budget terms functions
@@ -526,11 +552,6 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         'mean_conv_tensor_x2': mean_conv_tensor_x2,
         'mean_conv_tensor_x3': mean_conv_tensor_x3,
     }
-
-def compute_TKE_components_thermo(xdmf_data_dict, y_coords, average_z=False, average_x=False):
-    """Compute additional TKE budget components for quantities with favre averaging"""
-
-    return {}
 
 # =====================================================================================================================================================
 # Budget term extraction functions (dimension-agnostic on (3,3,...) tensors)

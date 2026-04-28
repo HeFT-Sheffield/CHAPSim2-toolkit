@@ -19,6 +19,9 @@ working_fluid = 'lithium'
 
 mhd_on = True
 
+average_x_direction = False # Averaging valid for periodic directions, set to False for spatially developing flows
+average_z_direction = True # Averaging valid for periodic directions, set to False for duct flows
+
 # Output ==============================================================================================================================================
 
 # Profiles
@@ -44,8 +47,6 @@ v_prime_sq_on = False
 # Reynolds Stress Budget terms
 re_stress_budget_on = False
 re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components
-average_z_direction = True # Averaging valid for periodic directions
-average_x_direction = False
 
 # thermo statistics
 heat_transf_coeff_on = False

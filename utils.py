@@ -100,12 +100,42 @@ class LiquidLithiumProperties:
         U = Cv * (T - T_ref) / 1000  # kJ/mol
         return U
     
-    def enthalpy(self, T, T_ref):
+    def enthalpy(self, T, T_ref=None):
         """
-        delta H = int(Cp dT) from T_ref to T
+        Molar enthalpy in kJ/mol.y
+
+        If T_ref is None, returns absolute enthalpy from the fitted Cp(T) integral.
+        If T_ref is provided, returns delta enthalpy relative to T_ref.
+        """
+        H_abs = (4754 * T - (0.925 * T**2) / 2 + (0.000291 * T**3) / 3) / 1000
+        if T_ref is None:
+            return H_abs
+
+        H_ref = (4754 * T_ref - (0.925 * T_ref**2) / 2 + (0.000291 * T_ref**3) / 3) / 1000
+        return H_abs - H_ref
+    
+    def temperature_from_enthalpy(self, H):
+        """
+        Invert enthalpy relation to find absolute temperature from enthalpy.
+
         """
 
-        return (4754 * (T - T_ref) - (0.925 * (T**2 - T_ref**2)) / 2 + (0.000291 * (T**3 - T_ref**3)) / 3) / 1000  # kJ/mol
+        # Coefficients of a*T^3 + b*T^2 + c*T + d = 0 from enthalpy(T) - H = 0
+        a = 0.000291 / 3.0
+        b = -0.925 / 2.0
+        c = 4754.0
+        d = -1000.0 * H
+
+        roots = np.roots([a, b, c, d])
+        real_roots = roots[np.abs(roots.imag) < 1e-8].real
+
+        valid_roots = real_roots[(real_roots >= self.T_melt) & (real_roots <= self.T_boil)]
+        if valid_roots.size == 0:
+            raise ValueError("No physical temperature root found for the given enthalpy.")
+
+        # For robustness, pick the root with the smallest residual in enthalpy.
+        residuals = np.abs([self.enthalpy(T) - H for T in valid_roots])
+        return float(valid_roots[np.argmin(residuals)])
     
     def entropy(self, T, T_ref):
         """
@@ -1085,7 +1115,27 @@ def _is_selected_variable(name, required_vars):
     base_name = _strip_avg_prefix(name)
     return (name in required_vars) or (base_name in required_vars)
 
-def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=None):
+def _reduce_xdmf_array(data, average_z=False, average_x=False, output_dim=None):
+    """Reduce XDMF array dimensionality using explicit averaging flags."""
+    if data is None or data.ndim != 3:
+        return data
+
+    if average_z and average_x:
+        return data.mean(axis=(0, 2))
+    if average_z:
+        return data.mean(axis=0)
+    if average_x:
+        return data.mean(axis=2)
+
+    if output_dim == 1:
+        return data.mean(axis=(0, 2))
+    if output_dim == 2:
+        return data.mean(axis=0)
+    return data
+
+
+def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=None,
+                    average_z=False, average_x=False):
     """
     Parse XDMF file and extract data from associated binary files.
 
@@ -1093,9 +1143,11 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=N
         xdmf_path: Path to the XDMF file
         load_all_vars: If True, load all variables. If False, only load required ones.
                        If None, uses module-level LOAD_ALL_VARS setting.
-        output_dim: Desired output dimension (1, 2, or 3)
+        output_dim: Legacy desired output dimension (1, 2, or 3)
         required_vars: Optional set/list of exact required variables (base or
                    prefixed names). If None, uses module REQUIRED_VARS.
+        average_z: If True, average over the z direction for 3D arrays.
+        average_x: If True, average over the x direction for 3D arrays.
 
     Returns:
         tuple: (arrays dict, grid_info dict)
@@ -1169,14 +1221,14 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=N
                     cell_dims = grid_info['cell_dimensions']
                     if data_3d.size == int(np.prod(cell_dims)):
                         data_3d = data_3d.reshape(cell_dims)
-                if output_dim == 1 and len(data_3d.shape) == 3:
-                    data = data_3d[data_3d.shape[0]//2, :, data_3d.shape[2]//2].copy()
+                data = _reduce_xdmf_array(
+                    data_3d,
+                    average_z=average_z,
+                    average_x=average_x,
+                    output_dim=output_dim,
+                )
+                if data is not data_3d:
                     del data_3d
-                elif output_dim == 2 and len(data_3d.shape) == 3:
-                    data = data_3d.mean(axis=0)
-                    del data_3d
-                else:
-                    data = data_3d
                 if task_type == 'grid':
                     grid_info[name] = data
                 else:
@@ -1366,7 +1418,8 @@ def parse_xdmf_metadata(xdmf_path):
     return var_metadata, grid_info
 
 
-def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=3):
+def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=3,
+                        average_z=False, average_x=False):
     """
     Load specific variables using pre-parsed XDMF metadata.
 
@@ -1374,7 +1427,9 @@ def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=
         var_metadata: dict from parse_xdmf_metadata
         selected_vars: list of variable names to load
         grid_info: grid info dict (for reshaping flat arrays)
-        output_dim: desired output dimensions (1, 2, or 3)
+        output_dim: legacy desired output dimensions (1, 2, or 3)
+        average_z: If True, average over the z direction for 3D arrays.
+        average_x: If True, average over the x direction for 3D arrays.
 
     Returns:
         dict: {variable_name: numpy_array}
@@ -1398,10 +1453,12 @@ def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=
                 data = data.reshape(cell_dims)
 
         # Reduce dimensionality if requested
-        if output_dim == 1 and len(data.shape) == 3:
-            data = data[data.shape[0]//2, :, data.shape[2]//2].copy()
-        elif output_dim == 2 and len(data.shape) == 3:
-            data = data.mean(axis=0)
+        data = _reduce_xdmf_array(
+            data,
+            average_z=average_z,
+            average_x=average_x,
+            output_dim=output_dim,
+        )
 
         arrays[name] = data
         tqdm.write(f"  Loaded {name}: shape {data.shape}")
@@ -1499,18 +1556,13 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
 
             # Parse the XDMF file
 
-            # Determine output dimensionality based on caller-supplied flags.
-            if average_z and average_x:
-                output_dim = 1
-            elif average_z:
-                output_dim = 2
-            else:
-                output_dim = 3
             arrays, file_grid_info = parse_xdmf_file(
                 xdmf_file,
                 load_all_vars=load_all_vars,
-                output_dim=output_dim,
-                required_vars=required_vars
+                output_dim=3,
+                required_vars=required_vars,
+                average_z=average_z,
+                average_x=average_x
             )
 
             if arrays:
