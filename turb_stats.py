@@ -364,7 +364,8 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
 
     if config.temp_on or config.heat_transf_coeff_on or config.Nusselt_number_on:
         # Support common naming variants in thermo files.
-        required.update({'T', 'temperature', 'temp', 'fuh', 'fu'})
+        required.update({'T', 'temperature', 'temp', 
+                         'fuh1', 'fu1'})
 
     if config.u_prime_sq_on:
         required.update({'u1', 'uu11'})
@@ -912,8 +913,8 @@ class HeatTransferCoefficient(Profiles):
 
         # Gather all required thermo variables
         temp_data = data_loader.get(case, 'T', timestep)
-        fuh_data = data_loader.get(case, 'fuh', timestep)
-        fu_data = data_loader.get(case, 'fu', timestep)
+        fuh_data = data_loader.get(case, 'fuh1', timestep)
+        fu_data = data_loader.get(case, 'fu1', timestep)
 
         if fuh_data is None or fu_data is None:
             print(f"Missing enthalpy data (fuh, fu) for {self.name} calculation: {case}, {timestep}")
