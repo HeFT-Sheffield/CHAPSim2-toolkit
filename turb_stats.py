@@ -891,20 +891,21 @@ class HeatTransferCoefficient(Profiles):
     """Wall heat transfer coefficient profile (x-direction only)."""
 
     def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
-                 norm_temp_by_ref_temp: bool):
+                 norm_temp_by_ref_temp: bool, working_fluid: str):
         super().__init__('heat_transfer_coeff', 'Heat Transfer Coefficient', ['T'])
         self.cases = cases
         self.ref_temp = ref_temp
         self.wall_heat_flux = wall_heat_flux
         self.norm_temp_by_ref_temp = norm_temp_by_ref_temp
         self.x_profile_only = True
+        self.fluid = ut.get_fluid_properties(working_fluid)
 
     def _case_value(self, values: List[float], case: str) -> float:
         return float(values[self.cases.index(case)]) if len(values) > 1 else float(values[0])
 
     def _compute_h_profile(self, temp: np.ndarray, fuh: np.ndarray, fu: np.ndarray, heat_flux: float, y_coords: Optional[np.ndarray]) -> np.ndarray:
         """Compute heat transfer coefficient profile from thermo variables."""
-        return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=y_coords))
+        return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=y_coords, fluid=self.fluid))
 
     def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
         if not data_loader.has(case, 'T', timestep):
@@ -1229,6 +1230,7 @@ class TurbulenceStatsPipeline:
                 self.config.ref_temp,
                 self.config.wall_heat_flux,
                 self.config.norm_temp_by_ref_temp,
+                self.config.working_fluid,
             ))
 
         if self.config.Nusselt_number_on:

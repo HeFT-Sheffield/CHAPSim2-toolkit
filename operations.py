@@ -178,7 +178,7 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
 # Thermo statistics functions
 # =====================================================================================================================================================
 
-def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None):
+def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None, fluid=None):
     """Compute wall heat-transfer coefficient using a mass flux average of enthalpy.
     
     Args:
@@ -187,6 +187,8 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None):
         fuh: Enthalpy flux field (same shape as temp)
         fu: Mass flux field (same shape as temp)
         y_coords: Wall-normal coordinates for integration
+        fluid: Fluid properties object (from utils.get_fluid_properties).
+               If None, defaults to LiquidLithiumProperties.
         
     Returns:
         Heat transfer coefficient (scalar or 1D array depending on input dims)
@@ -198,6 +200,9 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None):
     if y_coords is None:
         raise ValueError("y_coords is required for integration.")
     
+    if fluid is None:
+        fluid = utils.get_fluid_properties('lithium')
+    
     wall_temp = interpolate_wall_point(temp, y_coords=y_coords, wall='lower')
 
     if temp.ndim == 3:
@@ -206,7 +211,7 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None):
         fu = fu.mean(axis=0)
 
     bulk_enthalpy_x = np.trapz(fuh, y_coords, axis=0) / np.trapz(fu, y_coords, axis=0)
-    fluid_temp = utils.temperature_from_enthalpy(bulk_enthalpy_x)
+    fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x)
 
     return heat_flux / (wall_temp - fluid_temp)
 
