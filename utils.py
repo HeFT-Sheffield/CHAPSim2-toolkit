@@ -117,9 +117,26 @@ class LiquidLithiumProperties:
     def temperature_from_enthalpy(self, H):
         """
         Invert enthalpy relation to find absolute temperature from enthalpy.
-
+        
+        Handles both scalar and array inputs of enthalpy values.
         """
-
+        # Vectorize to handle array inputs
+        if np.ndim(H) == 0:
+            # Scalar case
+            h_val = float(H)
+            return self._temperature_from_enthalpy_scalar(h_val)
+        else:
+            # Array case
+            H_arr = np.asarray(H).ravel()
+            result = np.zeros_like(H_arr, dtype=float)
+            for i, h in enumerate(H_arr):
+                result[i] = self._temperature_from_enthalpy_scalar(float(h))
+            return result.reshape(np.asarray(H).shape)
+    
+    def _temperature_from_enthalpy_scalar(self, H):
+        """
+        Invert enthalpy relation for a single scalar enthalpy value.
+        """
         # Coefficients of a*T^3 + b*T^2 + c*T + d = 0 from enthalpy(T) - H = 0
         a = 0.000291 / 3.0
         b = -0.925 / 2.0
@@ -131,7 +148,7 @@ class LiquidLithiumProperties:
 
         valid_roots = real_roots[(real_roots >= self.T_melt) & (real_roots <= self.T_boil)]
         if valid_roots.size == 0:
-            raise ValueError("No physical temperature root found for the given enthalpy.")
+            raise ValueError(f"No physical temperature root found for enthalpy H={H}.")
 
         # For robustness, pick the root with the smallest residual in enthalpy.
         residuals = np.abs([self.enthalpy(T) - H for T in valid_roots])
