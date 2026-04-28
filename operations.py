@@ -111,9 +111,9 @@ def get_Re(case, cases, Re, ux_velocity, flow_forcing, y_coords=None):
         else:
             y = ux_velocity[:, 1]
         if len(Re) > 1:
-            cur_Re = Re[cases.index(case)] * (0.5 * np.trapezoid(profile, y))
+            cur_Re = Re[cases.index(case)] * (0.5 * np.trapz(profile, y))
         else:
-            cur_Re = Re[0] * (0.5 * np.trapezoid(profile, y))
+            cur_Re = Re[0] * (0.5 * np.trapz(profile, y))
     else:
         raise ValueError("flow_forcing must be either 'CMF' or 'CPG'")
     return cur_Re
@@ -205,7 +205,7 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, fuh, fu, y_coords=None):
         fuh = fuh.mean(axis=0)
         fu = fu.mean(axis=0)
 
-    bulk_enthalpy_x = np.trapezoid(fuh, y_coords, axis=0) / np.trapezoid(fu, y_coords, axis=0)
+    bulk_enthalpy_x = np.trapz(fuh, y_coords, axis=0) / np.trapz(fu, y_coords, axis=0)
     fluid_temp = utils.temperature_from_enthalpy(bulk_enthalpy_x)
 
     return heat_flux / (wall_temp - fluid_temp)
