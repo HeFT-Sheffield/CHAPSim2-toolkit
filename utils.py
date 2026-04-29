@@ -145,7 +145,7 @@ class LiquidLithiumProperties:
         a = 0.000291 / 3.0
         b = -0.925 / 2.0
         c = 4754.0
-        d = -H * h_ref if h_ref is not None else -H
+        d = -1000 * H * h_ref if h_ref is not None else -1000 * H
 
         roots = np.roots([a, b, c, d])
         real_roots = roots[np.abs(roots.imag) < 1e-8].real
