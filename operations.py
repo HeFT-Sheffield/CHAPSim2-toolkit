@@ -178,7 +178,8 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
 # Thermo statistics functions
 # =====================================================================================================================================================
 
-def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coords=None, fluid=None):
+def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coords=None,
+                                     fluid=None):
     """Compute wall heat-transfer coefficient using a mass flux average of enthalpy.
     
     Args:
@@ -186,7 +187,7 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         temp: Temperature field (1D, 2D, or 3D array)
         fuh: Enthalpy flux field (same shape as temp)
         fu: Mass flux field (same shape as temp)
-        y_coords: Wall-normal coordinates for integration
+         y_coords: Wall-normal coordinates for integration
         fluid: Fluid properties object (from utils.get_fluid_properties).
                If None, defaults to LiquidLithiumProperties.
         
@@ -203,16 +204,35 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
     if fluid is None:
         fluid = utils.get_fluid_properties('lithium')
     
-    wall_temp = interpolate_wall_point(temp, y_coords=y_coords, wall='lower')
-    
     if temp.ndim == 3:
-        wall_temp = wall_temp.mean(axis=0)
-        fuh = fuh.mean(axis=0)
-        fu = fu.mean(axis=0)
+        # Ensure y_coords is 1D and matches axis 1 size (nz, ny, nx)
+        y_coords_1d = np.asarray(y_coords).ravel()
+        if y_coords_1d.size != fuh.shape[1]:
+            raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 1 size {fuh.shape[1]}")
 
-    bulk_enthalpy_x = np.trapz(fuh, y_coords, axis=0) / np.trapz(fu, y_coords, axis=0) # non dim
-    fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x, ref_temp) # returns dimensional fluid temp
-    wall_temp =  wall_temp * ref_temp # dimensionalise wall temp
+        # Integrate over y (wall-normal, axis=1)
+        fuh_y_integrated = np.trapz(fuh, y_coords_1d, axis=1)  # shape: (nz, nx)
+        fu_y_integrated = np.trapz(fu, y_coords_1d, axis=1)    # shape: (nz, nx)
+
+        # Integrate over z (axis=0). For uniform z, mean vs integral differs by
+        # a constant factor that cancels in the ratio.
+        bulk_enthalpy_x = fuh_y_integrated.mean(axis=0) / fu_y_integrated.mean(axis=0)  # non dim
+
+        # Wall temperature: interpolate in y, then average over z to get x-profile
+        wall_temp = interpolate_wall_point(temp.swapaxes(0, 1), y_coords=y_coords_1d, wall='lower')
+        wall_temp = wall_temp.mean(axis=0)
+    elif temp.ndim == 2:
+        # z-averaged data: (ny, nx)
+        y_coords_1d = np.asarray(y_coords).ravel()
+        if y_coords_1d.size != fuh.shape[0]:
+            raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 0 size {fuh.shape[0]}")
+        bulk_enthalpy_x = np.trapz(fuh, y_coords_1d, axis=0) / np.trapz(fu, y_coords_1d, axis=0)
+        wall_temp = interpolate_wall_point(temp, y_coords=y_coords_1d, wall='lower')
+    else:
+        raise ValueError("2D or 3D data required for surface integral.")
+
+    fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x, ref_temp)  # dimensional fluid temp
+    wall_temp = wall_temp * ref_temp
 
     return heat_flux / (wall_temp - fluid_temp)
 

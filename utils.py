@@ -102,7 +102,7 @@ class LiquidLithiumProperties:
     
     def enthalpy(self, T, T_ref=None):
         """
-        Molar enthalpy in kJ/mol.y
+        Molar enthalpy in kJ/mol.
 
         If T_ref is None, returns absolute enthalpy from the fitted Cp(T) integral.
         If T_ref is provided, returns delta enthalpy relative to T_ref.
@@ -123,21 +123,21 @@ class LiquidLithiumProperties:
         
         h_ref = None
         if ref_temp is not None:
-            h_ref = self.enthalpy(ref_temp)  # find reference enthalpy
-
+            h_ref = self.enthalpy(ref_temp)  # find reference enthalpy and convert to J/mol for internal calculation
+            ref_cp = self.heat_capacity_p_molar(ref_temp)
         if np.ndim(H) == 0:
             # Scalar case
             h_val = float(H)
-            return self._temperature_from_enthalpy_scalar(h_val, h_ref)
+            return self._temperature_from_enthalpy_scalar(h_val, h_ref, ref_temp, ref_cp)
         else:
             # Array case
             H_arr = np.asarray(H).ravel()
             result = np.zeros_like(H_arr, dtype=float)
             for i, h in enumerate(H_arr):
-                result[i] = self._temperature_from_enthalpy_scalar(float(h), h_ref)
+                result[i] = self._temperature_from_enthalpy_scalar(float(h), h_ref, ref_temp, ref_cp)
             return result.reshape(np.asarray(H).shape)
     
-    def _temperature_from_enthalpy_scalar(self, H, h_ref=None):
+    def _temperature_from_enthalpy_scalar(self, H, h_ref=None, ref_temp=None, ref_cp=None):
         """
         Invert enthalpy relation for a single scalar enthalpy value.
         """
@@ -145,7 +145,8 @@ class LiquidLithiumProperties:
         a = 0.000291 / 3.0
         b = -0.925 / 2.0
         c = 4754.0
-        d = -1000 * H * h_ref if h_ref is not None else -1000 * H
+        H_dim = H * ref_temp * ref_cp + h_ref if h_ref is not None else H
+        d = -1000 * H_dim
 
         roots = np.roots([a, b, c, d])
         real_roots = roots[np.abs(roots.imag) < 1e-8].real
@@ -154,7 +155,7 @@ class LiquidLithiumProperties:
         if valid_roots.size == 0:
             raise ValueError(f"No physical temperature root found for enthalpy H={H}.")
 
-        residuals = np.abs([self.enthalpy(T) - H for T in valid_roots])
+        residuals = np.abs([self.enthalpy(T) - H_dim for T in valid_roots])
         return float(valid_roots[np.argmin(residuals)])
     
     def entropy(self, T, T_ref):

@@ -459,6 +459,7 @@ class TurbulenceXDMFData:
         self.grid_info: Dict = {}
         self.y_coords: Optional[np.ndarray] = None
         self.x_coords: Optional[np.ndarray] = None
+        self.z_coords: Optional[np.ndarray] = None
         try:
             self.x_crop: Optional[Tuple[float, float]] = ut.parse_x_crop_input(x_crop)
         except ValueError:
@@ -529,8 +530,10 @@ class TurbulenceXDMFData:
             if self.y_coords is None and grid_info:
                 y_nodes = grid_info.get('grid_y', None)
                 if y_nodes is not None:
-                    # y is always axis 0 for native arrays
-                    ny = sample.shape[0]
+                    if sample.ndim == 3:
+                        ny = sample.shape[1]  # (nz, ny, nx)
+                    else:
+                        ny = sample.shape[0]  # (ny, nx) or (ny,)
                     if len(y_nodes) == ny + 1:
                         self.y_coords = 0.5 * (y_nodes[:-1] + y_nodes[1:])
                     elif len(y_nodes) == ny:
@@ -541,13 +544,27 @@ class TurbulenceXDMFData:
             if self.x_coords is None and grid_info:
                 x_nodes = grid_info.get('grid_x', None)
                 if x_nodes is not None and sample.ndim >= 2:
-                    nx = sample.shape[1]  # axis 1 is x for 2-D (ny, nx)
+                    if sample.ndim == 3:
+                        nx = sample.shape[2]  # (nz, ny, nx)
+                    else:
+                        nx = sample.shape[1]  # (ny, nx)
                     if len(x_nodes) == nx + 1:
                         self.x_coords = 0.5 * (x_nodes[:-1] + x_nodes[1:])
                     elif len(x_nodes) == nx:
                         self.x_coords = x_nodes.copy()
                     else:
                         self.x_coords = np.linspace(x_nodes.min(), x_nodes.max(), nx)
+
+            if self.z_coords is None and grid_info:
+                z_nodes = grid_info.get('grid_z', None)
+                if z_nodes is not None and sample.ndim == 3:
+                    nz = sample.shape[0]  # (nz, ny, nx)
+                    if len(z_nodes) == nz + 1:
+                        self.z_coords = 0.5 * (z_nodes[:-1] + z_nodes[1:])
+                    elif len(z_nodes) == nz:
+                        self.z_coords = z_nodes.copy()
+                    else:
+                        self.z_coords = np.linspace(z_nodes.min(), z_nodes.max(), nz)
 
             # Apply optional x-crop once at load stage
             self.data[key] = self._apply_x_crop_to_arrays(dict(arrays[key]))
@@ -891,21 +908,29 @@ class HeatTransferCoefficient(Profiles):
     """Wall heat transfer coefficient profile (x-direction only)."""
 
     def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
-                 norm_temp_by_ref_temp: bool, working_fluid: str):
+                 working_fluid: str):
         super().__init__('heat_transfer_coeff', 'Heat Transfer Coefficient', ['T'])
         self.cases = cases
         self.ref_temp = ref_temp
         self.wall_heat_flux = wall_heat_flux
-        self.norm_temp_by_ref_temp = norm_temp_by_ref_temp
         self.x_profile_only = True
         self.fluid = ut.get_fluid_properties(working_fluid)
 
     def _case_value(self, values: List[float], case: str) -> float:
         return float(values[self.cases.index(case)]) if len(values) > 1 else float(values[0])
 
-    def _compute_h_profile(self, temp: np.ndarray, ref_temp: float, fuh: np.ndarray, fu: np.ndarray, heat_flux: float, y_coords: Optional[np.ndarray]) -> np.ndarray:
+    def _compute_h_profile(self, temp: np.ndarray, ref_temp: float, fuh: np.ndarray, fu: np.ndarray,
+                           heat_flux: float, y_coords: Optional[np.ndarray]) -> np.ndarray:
         """Compute heat transfer coefficient profile from thermo variables."""
-        return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coords=y_coords, fluid=self.fluid))
+        return np.asarray(op.compute_wall_heat_transfer_coeff(
+            heat_flux,
+            temp,
+            ref_temp,
+            fuh,
+            fu,
+            y_coords=y_coords,
+            fluid=self.fluid,
+        ))
 
     def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
         if not data_loader.has(case, 'T', timestep):
@@ -924,8 +949,14 @@ class HeatTransferCoefficient(Profiles):
         heat_flux = self._case_value(self.wall_heat_flux, case)
         ref_temp = self._case_value(self.ref_temp, case)
         y_coords = getattr(data_loader, 'y_coords', None)
-        
-        self.raw_results[(case, timestep)] = self._compute_h_profile(temp_data, ref_temp, fuh_data, fu_data, heat_flux, y_coords)
+        self.raw_results[(case, timestep)] = self._compute_h_profile(
+            temp_data,
+            ref_temp,
+            fuh_data,
+            fu_data,
+            heat_flux,
+            y_coords,
+        )
         return True
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
@@ -936,8 +967,8 @@ class NusseltNumber(HeatTransferCoefficient):
     """Wall Nusselt number profile (x-direction only)."""
 
     def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
-                 ref_length: List[float], working_fluid: str, norm_temp_by_ref_temp: bool):
-        super().__init__(cases, ref_temp, wall_heat_flux, norm_temp_by_ref_temp, working_fluid)
+                 ref_length: List[float], working_fluid: str):
+        super().__init__(cases, ref_temp, wall_heat_flux, working_fluid)
         self.name = 'nusselt_number'
         self.label = 'Local Nusselt Number'
         self.ref_length = ref_length
@@ -961,7 +992,6 @@ class NusseltNumber(HeatTransferCoefficient):
         ref_len = self._case_value(self.ref_length, case)
         ref_temp = self._case_value(self.ref_temp, case)
         y_coords = getattr(data_loader, 'y_coords', None)
-
         h_profile = self._compute_h_profile(temp_data, ref_temp, fuh_data, fu_data, heat_flux, y_coords)
         k_ref = float(self.fluid.thermal_conductivity(ref_temp)) # this is wrong, should be based on bulk temp
         fluid_props = {'k': k_ref}
@@ -1225,7 +1255,6 @@ class TurbulenceStatsPipeline:
                 self.config.cases,
                 self.config.ref_temp,
                 self.config.wall_heat_flux,
-                self.config.norm_temp_by_ref_temp,
                 self.config.working_fluid,
             ))
 
@@ -1236,7 +1265,6 @@ class TurbulenceStatsPipeline:
                 self.config.wall_heat_flux,
                 self.config.ref_length,
                 self.config.working_fluid,
-                self.config.norm_temp_by_ref_temp,
             ))
 
         if self.config.coeff_friction_on:
