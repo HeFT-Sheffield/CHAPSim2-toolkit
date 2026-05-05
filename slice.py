@@ -1041,7 +1041,6 @@ def main():
         var_metadata,
         slice_config['variables'],
         grid_info=grid_info,
-        output_dim=3 if not is_2d_slice else 2
     )
 
     if not data:
@@ -1242,7 +1241,6 @@ def main():
                 var_metadata,
                 slice_config['variables'],
                 grid_info=grid_info,
-                output_dim=2 if is_2d_slice else 3
             )
             if not data:
                 print("Error: Failed to load selected variables.")

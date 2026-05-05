@@ -239,6 +239,17 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
 def compute_wall_Nusselt_number(heat_transfer_coeff, ref_length, ref_fluid_properties):
     return ( heat_transfer_coeff * ref_length ) / ref_fluid_properties['k']
 
+def compute_temp_fluc(T, TT):
+    temp_fluc = np.sqrt(TT - np.square(T))
+    return temp_fluc
+
+def compute_turb_Prandtl_number(ux, uy, uv, T, Tuy, y_coords):
+    shear_stress = compute_shear_stress(ux, uy, uv)
+    temp_grad = np.gradient(T, axis=y_coords)
+    velocity_grad = np.gradient(ux, axis=y_coords)
+    uy_temp_fluc_corr = compute_shear_stress(T, uy, Tuy)
+    return (shear_stress / uy_temp_fluc_corr) * (temp_grad / velocity_grad)
+
 # =====================================================================================================================================================
 # TKE Budget terms functions
 # =====================================================================================================================================================

@@ -117,7 +117,7 @@ def load_xdmf_data(visu_folder, timestep, slice_label=None):
             pbar.set_postfix_str(pattern[:30])
 
             # Use the shared XDMF reader from utils
-            arrays, file_grid_info = ut.parse_xdmf_file(filepath, load_all_vars=False, output_dim=1 if 'tsp_avg' in filepath else 3)
+            arrays, file_grid_info = ut.parse_xdmf_file(filepath, load_all_vars=False)
 
             # Store grid info from first file that has it
             if not grid_info and file_grid_info:
@@ -129,19 +129,16 @@ def load_xdmf_data(visu_folder, timestep, slice_label=None):
     return all_data, grid_info
 
 
-def extract_y_profile(data_3d, grid_info):
+def extract_y_profile(data):
     """
     Extract 1D y-profile by averaging over x and z directions.
-    Data shape is typically (nz, ny, nx) for cell-centered data.
+    Handles 3D (nz, ny, nx), 2D (ny, nx), and 1D (ny,) input.
     """
-    if len(data_3d.shape) == 3:
-        # Average over x (axis 2) and z (axis 0)
-        profile = np.mean(np.mean(data_3d, axis=2), axis=0)
-    elif len(data_3d.shape) == 1:
-        profile = data_3d
-    else:
-        profile = data_3d.flatten()
-    return profile
+    if data.ndim == 3:
+        return data.mean(axis=(0, 2))
+    if data.ndim == 2:
+        return data.mean(axis=1)
+    return data
 
 
 def compute_reynolds_stresses(data, grid_info, x_crop=None):
@@ -169,7 +166,7 @@ def compute_reynolds_stresses(data, grid_info, x_crop=None):
             for name in base_names:
                 full_name = f'{prefix}{name}'
                 if full_name in data:
-                    return extract_y_profile(crop_x_if_needed(data[full_name]), grid_info)
+                    return extract_y_profile(crop_x_if_needed(data[full_name]))
         return None
 
     # Velocity components

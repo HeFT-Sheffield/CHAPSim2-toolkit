@@ -34,7 +34,7 @@ _BASE_REQUIRED_VARS = [
     # Turbulent diffusion
     'd_uiuiu1_dx', 'd_uiuiu2_dy', 'd_uiuiu3_dz',
     # Temperature
-    'T', 'temperature', 'temp', 'TT',
+    'T', 'Temperature', 'temp', 'TT',
 ]
 
 # Build full set including prefixed versions (tsp_avg_, t_avg_)
@@ -747,9 +747,9 @@ def get_fluid_properties(medium):
 # XML PARSING HELPER
 # =====================================================================================================================================================
 
-def _parse_xdmf_xml(xml_content, xdmf_path=""):
+def _parse_xdmf_xml(xdmf_path):
     """
-    Parse XDMF XML content, handling files that have been appended
+    Parse an XDMF file, handling files that have been appended
     (multiple root elements).
 
     When a simulation appends to an existing XDMF file, the result is
@@ -761,17 +761,22 @@ def _parse_xdmf_xml(xml_content, xdmf_path=""):
         ET.Element: The root element to iterate over, or None on failure.
     """
     try:
-        return ET.fromstring(xml_content)
+        return ET.parse(xdmf_path).getroot()
     except ET.ParseError:
         pass
 
-    # Likely multiple root elements — wrap in a synthetic root and take the last entry
-    # Strip XML declarations (<?xml ...?>) which are only valid at the document start
+    # Likely multiple root elements — read to string, wrap in synthetic root, take last entry
     import re
+    try:
+        with open(xdmf_path, 'r') as f:
+            xml_content = f.read()
+    except IOError as e:
+        print(f"Error reading {xdmf_path}: {e}")
+        return None
+
     cleaned = re.sub(r'<\?xml[^?]*\?>', '', xml_content)
     try:
-        wrapped = f"<_wrapper>{cleaned}</_wrapper>"
-        wrapper = ET.fromstring(wrapped)
+        wrapper = ET.fromstring(f"<_wrapper>{cleaned}</_wrapper>")
         xdmf_elements = list(wrapper)
         if xdmf_elements:
             print(f"Note: {os.path.basename(xdmf_path)} contains {len(xdmf_elements)} "
@@ -819,20 +824,19 @@ def get_quantities(thermo_on):
 # =====================================================================================================================================================
 
 def visu_file_paths(folder_path, case, timestep):
-    """Return XDMF file paths for instantaneous and time-averaged data.
-
-    Note: tsp_avg (time-space averaged) data is stored as .dat files
-    in 1_data/ and aren't available as XDMF.  Only instantaneous and
-    t_avg data have XDMF files in 2_visu/.
-    """
+    """Return XDMF file paths for instantaneous, time-averaged, and tsp_avg (zi1) data."""
     case_dir = case_path(folder_path, case)
+    visu = os.path.join(case_dir, '2_visu')
     file_names = [
-        os.path.join(case_dir, '2_visu', f'domain1_flow_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_t_avg_flow_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_thermo_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_t_avg_thermo_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_mhd_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_t_avg_mhd_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_flow_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_t_avg_flow_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_tsp_avg_flow_zi1_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_thermo_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_t_avg_thermo_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_tsp_avg_thermo_zi1_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_mhd_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_t_avg_mhd_{timestep}.xdmf'),
+        os.path.join(visu, f'domain1_tsp_avg_mhd_zi1_{timestep}.xdmf'),
     ]
     return file_names
 
@@ -1136,8 +1140,8 @@ def _is_selected_variable(name, required_vars):
     base_name = _strip_avg_prefix(name)
     return (name in required_vars) or (base_name in required_vars)
 
-def _reduce_xdmf_array(data, average_z=False, average_x=False, output_dim=None):
-    """Reduce XDMF array dimensionality using explicit averaging flags."""
+def _reduce_xdmf_array(data, average_z=False, average_x=False):
+    """Reduce XDMF array dimensionality. Averages over requested axes then squeezes singletons."""
     if data is None or data.ndim != 3:
         return data
 
@@ -1148,14 +1152,10 @@ def _reduce_xdmf_array(data, average_z=False, average_x=False, output_dim=None):
     if average_x:
         return data.mean(axis=2)
 
-    if output_dim == 1:
-        return data.mean(axis=(0, 2))
-    if output_dim == 2:
-        return data.mean(axis=0)
-    return data
+    return np.squeeze(data)
 
 
-def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=None,
+def parse_xdmf_file(xdmf_path, load_all_vars=None, required_vars=None,
                     average_z=False, average_x=False):
     """
     Parse XDMF file and extract data from associated binary files.
@@ -1164,14 +1164,14 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=N
         xdmf_path: Path to the XDMF file
         load_all_vars: If True, load all variables. If False, only load required ones.
                        If None, uses module-level LOAD_ALL_VARS setting.
-        output_dim: Legacy desired output dimension (1, 2, or 3)
         required_vars: Optional set/list of exact required variables (base or
                    prefixed names). If None, uses module REQUIRED_VARS.
         average_z: If True, average over the z direction for 3D arrays.
         average_x: If True, average over the x direction for 3D arrays.
 
     Returns:
-        tuple: (arrays dict, grid_info dict)
+        tuple: (arrays dict, grid_info dict). Singleton dimensions (e.g. from tsp_avg
+               z-slice files) are automatically squeezed to give true 2D output.
     """
     if load_all_vars is None:
         load_all_vars = LOAD_ALL_VARS
@@ -1179,16 +1179,7 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=N
     if not os.path.isfile(xdmf_path):
         return {}, {}
 
-    try:
-        # Read file content first, then parse from string
-        # This avoids ET.parse() holding file locks on Lustre filesystems
-        with open(xdmf_path, 'r') as f:
-            xml_content = f.read()
-    except IOError as e:
-        print(f"Error reading {xdmf_path}: {e}")
-        return {}, {}
-
-    root = _parse_xdmf_xml(xml_content, xdmf_path)
+    root = _parse_xdmf_xml(xdmf_path)
     if root is None:
         return {}, {}
 
@@ -1246,7 +1237,6 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=N
                     data_3d,
                     average_z=average_z,
                     average_x=average_x,
-                    output_dim=output_dim,
                 )
                 if data is not data_3d:
                     del data_3d
@@ -1374,14 +1364,7 @@ def parse_xdmf_metadata(xdmf_path):
     if not os.path.isfile(xdmf_path):
         return {}, {}
 
-    try:
-        with open(xdmf_path, 'r') as f:
-            xml_content = f.read()
-    except IOError as e:
-        print(f"Error reading {xdmf_path}: {e}")
-        return {}, {}
-
-    root = _parse_xdmf_xml(xml_content, xdmf_path)
+    root = _parse_xdmf_xml(xdmf_path)
     if root is None:
         return {}, {}
 
@@ -1439,7 +1422,7 @@ def parse_xdmf_metadata(xdmf_path):
     return var_metadata, grid_info
 
 
-def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=3,
+def load_xdmf_variables(var_metadata, selected_vars, grid_info=None,
                         average_z=False, average_x=False):
     """
     Load specific variables using pre-parsed XDMF metadata.
@@ -1448,12 +1431,12 @@ def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=
         var_metadata: dict from parse_xdmf_metadata
         selected_vars: list of variable names to load
         grid_info: grid info dict (for reshaping flat arrays)
-        output_dim: legacy desired output dimensions (1, 2, or 3)
         average_z: If True, average over the z direction for 3D arrays.
         average_x: If True, average over the x direction for 3D arrays.
 
     Returns:
-        dict: {variable_name: numpy_array}
+        dict: {variable_name: numpy_array}. Singleton dimensions are automatically
+              squeezed (e.g. tsp_avg slice files become true 2D).
     """
     arrays = {}
 
@@ -1473,13 +1456,7 @@ def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=
             if data.size == int(np.prod(cell_dims)):
                 data = data.reshape(cell_dims)
 
-        # Reduce dimensionality if requested
-        data = _reduce_xdmf_array(
-            data,
-            average_z=average_z,
-            average_x=average_x,
-            output_dim=output_dim,
-        )
+        data = _reduce_xdmf_array(data, average_z=average_z, average_x=average_x)
 
         arrays[name] = data
         tqdm.write(f"  Loaded {name}: shape {data.shape}")
@@ -1545,49 +1522,55 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
     # Filter to only existing files for accurate progress bar
     existing_files = [f for f in file_names if os.path.isfile(f)]
 
-    # Filter by data types if specified
+    # Select which files to load, by priority or explicit data_types
     if data_types is not None:
         filtered_files = []
         for f in existing_files:
             filename = os.path.basename(f)
-            # Check if file matches any of the requested data types
             for dtype in data_types:
                 if dtype == 't_avg':
-                    # Match t_avg prefix patterns like 't_avg_flow', 't_avg_thermo'
                     if 't_avg_' in filename:
                         filtered_files.append(f)
                         break
                 elif dtype == 'inst':
-                    # Match instantaneous files (flow, thermo, mhd without t_avg prefix)
                     if 't_avg' not in filename:
                         filtered_files.append(f)
                         break
                 else:
-                    # Match specific combinations like 't_avg_flow', 't_avg_thermo'
                     if dtype in filename:
                         filtered_files.append(f)
                         break
         existing_files = filtered_files
-        if data_types:
-            tqdm.write(f"Filtering for data types: {data_types}")
+        tqdm.write(f"Filtering for data types: {data_types}")
+    else:
+        # Auto-select tier: tsp_avg_zi1 (if average_z) > t_avg > inst
+        tsp_files  = [f for f in existing_files if 'tsp_avg_' in os.path.basename(f)]
+        t_avg_files = [f for f in existing_files if '_t_avg_' in os.path.basename(f)]
+        inst_files  = [f for f in existing_files if 't_avg' not in os.path.basename(f)]
+        if average_z and tsp_files:
+            existing_files = tsp_files
+            tqdm.write("Using tsp_avg_zi1 (pre-z-averaged) files")
+        elif t_avg_files:
+            existing_files = t_avg_files
+            tqdm.write("Using 3D time-averaged files")
+        else:
+            existing_files = inst_files
+            tqdm.write("No time-averaged files found, loading instantaneous files")
 
     for xdmf_file in tqdm(existing_files, desc="Processing XDMF files", unit="file"):
         try:
             tqdm.write(f"Opening file: {xdmf_file}")
-
-            # Parse the XDMF file
+            is_tsp_avg = 'tsp_avg_' in os.path.basename(xdmf_file)
 
             arrays, file_grid_info = parse_xdmf_file(
                 xdmf_file,
                 load_all_vars=load_all_vars,
-                output_dim=3,
                 required_vars=required_vars,
-                average_z=average_z,
+                average_z=False if is_tsp_avg else average_z,
                 average_x=average_x
             )
 
             if arrays:
-                # Extract file type from filename for prefixing (optional)
                 if 't_avg' in xdmf_file:
                     file_type = 't_avg'
                 elif '_mhd_' in xdmf_file:
@@ -1597,17 +1580,16 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
                 else:
                     file_type = 'flow'
 
-                # Store grid info if not already stored
                 if not grid_info and file_grid_info:
                     grid_info = file_grid_info
                     if 'node_dimensions' in grid_info:
                         tqdm.write(f"Grid info: node_dimensions={grid_info['node_dimensions']}, cell_dimensions={grid_info.get('cell_dimensions', 'N/A')}")
 
-                # Add arrays to dictionary, stripping averaging prefixes for consistency
                 for var_name, var_data in arrays.items():
-                    # Strip t_avg_ prefix so statistics code can use base names
-                    if var_name.startswith('t_avg_'):
-                        base_name = var_name[6:]  # Remove 't_avg_'
+                    if var_name.startswith('tsp_avg_'):
+                        base_name = var_name[8:]
+                    elif var_name.startswith('t_avg_'):
+                        base_name = var_name[6:]
                     else:
                         base_name = var_name
                     inner_dict[base_name] = var_data
