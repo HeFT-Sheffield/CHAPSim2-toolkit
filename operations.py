@@ -450,7 +450,7 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     # Pressure-velocity fluctuation correlations
     # ------------------------------------------------------------------
     pru = [get_var('pru1'), get_var('pru2'), get_var('pru3')]
-    pru_prime = [None]*3
+    pru_prime = [None] * 3
     for i in range(3):
         if pru[i] is not None and pr is not None:
             pru_prime[i] = pru[i] - pr * u_fields[i]
@@ -566,10 +566,21 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     turb_conv_tensor_x3 = _build_sym_tensor(lambda i, j: _or_zero(_turb_conv_component(i, j, 2)))
 
     # ------------------------------------------------------------------
+    # buoyancy term
+    # ------------------------------------------------------------------
+
+    fu = [get_var('fu1'), get_var('fu2'), get_var('fu3')]
+    f_prime_u_prime = [None] * 3
+    for i in range (3):
+        if fu is not None:
+            f_prime_u_prime = (fu[i] - (dens * u_fields[i]))
+    
+    # ------------------------------------------------------------------
     # Output
     # ------------------------------------------------------------------
     return {
         'U1': u1, 'U2': u2, 'U3': u3,
+        'u_prime': u_prime_rms,
         'pr': pr,
         'f' : dens,
         'TKE': tke,
@@ -588,6 +599,7 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         'mean_conv_tensor_x1': mean_conv_tensor_x1,
         'mean_conv_tensor_x2': mean_conv_tensor_x2,
         'mean_conv_tensor_x3': mean_conv_tensor_x3,
+        'f_prime_u_prime': f_prime_u_prime,
     }
 
 # =====================================================================================================================================================
@@ -665,7 +677,7 @@ def compute_viscous_diffusion(Re, turb_comp_dict, uiuj='total'):
         i, j = _parse_component(uiuj)
         return {'viscous_diffusion': (1/Re) * total[i, j]}
 
-def compute_pressure_transport(tke_comp_dict, uiuj='total'):
+def compute_pressure_transport(tke_comp_dict, uiuj='total'): # think this needs 1 / rho
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
     P = tke_comp_dict['press_velocity_fluc_grad_tensor']
     if uiuj == 'total':
@@ -676,12 +688,12 @@ def compute_pressure_transport(tke_comp_dict, uiuj='total'):
 
 def compute_pressure_strain(tke_comp_dict, uiuj='total'):
     """
-    Pressure strain: Π_ij = ⟨p'(∂u'_i/∂x_j + ∂u'_j/∂x_i)⟩
+    Pressure strain: Π_ij = ⟨p'(∂u'_i/∂x_j + ∂u'_j/∂x_i) / rho⟩
 
     Uses the pressure_strain_tensor S[i,j] = ⟨p' ∂u'_i/∂x_j⟩
     so that Π_ij = S[i,j] + S[j,i].
     For total (trace): Π_kk = 2 * trace(S) = 2⟨p' ∂u'_k/∂x_k⟩ = 0
-    by incompressibility (∂u'_k/∂x_k = 0).
+    by incompressibility (∂u'_k/∂x_k = 0).{\displaystyle \mathrm {Ri} ={\frac {g\beta (T_{\text{hot}}-T_{\text{ref}})L}{v^{2}}},}
     """
     f = tke_comp_dict['f']
     S = tke_comp_dict['pressure_strain_tensor']
@@ -691,11 +703,36 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total'):
         i, j = _parse_component(uiuj)
         return {'pressure_strain': (S[i, j] + S[j, i]) / f}
 
-def compute_buoyancy_term():
-    return
+def compute_buoyancy_term(tke_comp_dict, uiuj='total'): # check this
+    """
+    G_ij = 1/<rho>(g_i<rho'uj'> + g_j<rho'ui'>)
+    """
+    rho = tke_comp_dict['f']
+    g = tke_comp_dict['grav_dir']
+    f_prime_u_prime = tke_comp_dict[f_prime_u_prime]
 
-def compute_mhd_term():
-    return
+    if uiuj == 'total':
+        return (1 / rho) * (np.einsum('ii...---> ...',g[i], f_prime_u_prime[i]))
+    else:
+        i, j = _parse_component(uiuj)
+        return (1 / rho) * ((np.einsum('i,j->ij', g[i], f_prime_u_prime[j])) + (np.einsum('j,i->ji', g[j], f_prime_u_prime[i]))) 
+
+def compute_mhd_term(tke_comp_dict, uiuj = 'total'):
+    """
+    Compute work done by lorentz force 
+    u'F' = Nu'eijkj'B
+    """
+    u_prime = tke_comp_dict('u_prime')
+    N = tke_comp_dict('stuart_number')
+    B = tke_comp_dict('mag_field_dir')
+    j = tke_comp_dict('elec_cur_dens')
+    eijk = tke_comp_dict('levi_civita')
+    
+    if uiuj == 'total':
+        return 2 * N * np.einsum()
+    else:
+        i, j = _parse_component(uiuj)
+        return N * (u_prime[i] * np.einsum('ijk,j,k->i', eijk, j[j], B) + u_prime[j] * np.einsum('ijk,j,k->i', eijk, j, B)) 
 
 # =====================================================================================================================================================
 # Normalisation & Averaging functions
