@@ -31,8 +31,18 @@ _BASE_REQUIRED_VARS = [
     'dkdx', 'dkdy', 'dkdz', 'd2kdx2', 'd2kdy2', 'd2kdz2',
     # Pressure terms
     'pr', 'pru1', 'pru2', 'pru3', 'd_pu1p_dx', 'd_pu2p_dy', 'd_pu3p_dz',
+    'prdu11', 'prdu12', 'prdu13', 'prdu21', 'prdu22', 'prdu23', 'prdu31', 'prdu32', 'prdu33',
     # Turbulent diffusion
     'd_uiuiu1_dx', 'd_uiuiu2_dy', 'd_uiuiu3_dz',
+    # Density / volume fraction (variable-property / MHD flows)
+    'f',
+    'fu1', 'fu2', 'fu3',
+    'fuu11', 'fuu12', 'fuu13', 'fuu22', 'fuu23', 'fuu33',
+    'fuuu111', 'fuuu112', 'fuuu113', 'fuuu122', 'fuuu123', 'fuuu133',
+    'fuuu222', 'fuuu223', 'fuuu233', 'fuuu333',
+    'fuh1', 'fuh2', 'fuh3',
+    'fuuh11', 'fuuh12', 'fuuh13', 'fuuh22', 'fuuh23', 'fuuh33',
+    'fh',
     # Temperature
     'T', 'Temperature', 'temp', 'TT',
 ]

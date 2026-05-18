@@ -91,6 +91,148 @@ def interpolate_wall_point(cell_data, y_coords=None, wall='lower'):
     wall_value = v0 + slope * (y_wall - y0)
     return wall_value
 
+def interpolate_cell_to_point_data(data):
+    """
+    Interpolate cell-centred data to point centres.
+    
+    Each point value is the average of all adjacent cells. Interior points use all 2^ndim
+    neighboring cells; boundary points use only adjacent cells.
+    """
+    ndim = data.ndim
+    
+    if ndim == 1:
+        nc = data.shape[0]
+        result = np.zeros(nc + 1, dtype=data.dtype)
+        result[0] = data[0]
+        result[1:-1] = 0.5 * (data[0:-1] + data[1:])
+        result[-1] = data[-1]
+        return result
+    
+    elif ndim == 2:
+        ncy, ncx = data.shape
+        result = np.zeros((ncy + 1, ncx + 1), dtype=data.dtype)
+        
+        # Interior points: average of 4 adjacent cells
+        result[1:-1, 1:-1] = 0.25 * (
+            data[0:-1, 0:-1] + data[0:-1, 1:] +
+            data[1:, 0:-1] + data[1:, 1:]
+        )
+        
+        # Corners
+        result[0, 0] = data[0, 0]
+        result[0, -1] = data[0, -1]
+        result[-1, 0] = data[-1, 0]
+        result[-1, -1] = data[-1, -1]
+        
+        # Edges: average of 2 adjacent cells
+        result[0, 1:-1] = 0.5 * (data[0, 0:-1] + data[0, 1:])
+        result[-1, 1:-1] = 0.5 * (data[-1, 0:-1] + data[-1, 1:])
+        result[1:-1, 0] = 0.5 * (data[0:-1, 0] + data[1:, 0])
+        result[1:-1, -1] = 0.5 * (data[0:-1, -1] + data[1:, -1])
+        
+        return result
+    
+    elif ndim == 3:
+        ncz, ncy, ncx = data.shape
+        result = np.zeros((ncz + 1, ncy + 1, ncx + 1), dtype=data.dtype)
+        
+        # Interior points: average of 8 adjacent cells
+        result[1:-1, 1:-1, 1:-1] = 0.125 * (
+            data[0:-1, 0:-1, 0:-1] + data[0:-1, 0:-1, 1:] +
+            data[0:-1, 1:, 0:-1] + data[0:-1, 1:, 1:] +
+            data[1:, 0:-1, 0:-1] + data[1:, 0:-1, 1:] +
+            data[1:, 1:, 0:-1] + data[1:, 1:, 1:]
+        )
+        
+        # Corners: single cell value
+        result[0, 0, 0] = data[0, 0, 0]
+        result[0, 0, -1] = data[0, 0, -1]
+        result[0, -1, 0] = data[0, -1, 0]
+        result[0, -1, -1] = data[0, -1, -1]
+        result[-1, 0, 0] = data[-1, 0, 0]
+        result[-1, 0, -1] = data[-1, 0, -1]
+        result[-1, -1, 0] = data[-1, -1, 0]
+        result[-1, -1, -1] = data[-1, -1, -1]
+        
+        # Edges (z-parallel, y-parallel, x-parallel): average of 2 cells
+        result[0, 0, 1:-1] = 0.5 * (data[0, 0, 0:-1] + data[0, 0, 1:])
+        result[0, -1, 1:-1] = 0.5 * (data[0, -1, 0:-1] + data[0, -1, 1:])
+        result[-1, 0, 1:-1] = 0.5 * (data[-1, 0, 0:-1] + data[-1, 0, 1:])
+        result[-1, -1, 1:-1] = 0.5 * (data[-1, -1, 0:-1] + data[-1, -1, 1:])
+        
+        result[0, 1:-1, 0] = 0.5 * (data[0, 0:-1, 0] + data[0, 1:, 0])
+        result[0, 1:-1, -1] = 0.5 * (data[0, 0:-1, -1] + data[0, 1:, -1])
+        result[-1, 1:-1, 0] = 0.5 * (data[-1, 0:-1, 0] + data[-1, 1:, 0])
+        result[-1, 1:-1, -1] = 0.5 * (data[-1, 0:-1, -1] + data[-1, 1:, -1])
+        
+        result[1:-1, 0, 0] = 0.5 * (data[0:-1, 0, 0] + data[1:, 0, 0])
+        result[1:-1, 0, -1] = 0.5 * (data[0:-1, 0, -1] + data[1:, 0, -1])
+        result[1:-1, -1, 0] = 0.5 * (data[0:-1, -1, 0] + data[1:, -1, 0])
+        result[1:-1, -1, -1] = 0.5 * (data[0:-1, -1, -1] + data[1:, -1, -1])
+        
+        # Faces (4 cells): xy-faces, xz-faces, yz-faces
+        result[0, 1:-1, 1:-1] = 0.25 * (
+            data[0, 0:-1, 0:-1] + data[0, 0:-1, 1:] +
+            data[0, 1:, 0:-1] + data[0, 1:, 1:]
+        )
+        result[-1, 1:-1, 1:-1] = 0.25 * (
+            data[-1, 0:-1, 0:-1] + data[-1, 0:-1, 1:] +
+            data[-1, 1:, 0:-1] + data[-1, 1:, 1:]
+        )
+        
+        result[1:-1, 0, 1:-1] = 0.25 * (
+            data[0:-1, 0, 0:-1] + data[0:-1, 0, 1:] +
+            data[1:, 0, 0:-1] + data[1:, 0, 1:]
+        )
+        result[1:-1, -1, 1:-1] = 0.25 * (
+            data[0:-1, -1, 0:-1] + data[0:-1, -1, 1:] +
+            data[1:, -1, 0:-1] + data[1:, -1, 1:]
+        )
+        
+        result[1:-1, 1:-1, 0] = 0.25 * (
+            data[0:-1, 0:-1, 0] + data[0:-1, 1:, 0] +
+            data[1:, 0:-1, 0] + data[1:, 1:, 0]
+        )
+        result[1:-1, 1:-1, -1] = 0.25 * (
+            data[0:-1, 0:-1, -1] + data[0:-1, 1:, -1] +
+            data[1:, 0:-1, -1] + data[1:, 1:, -1]
+        )
+        
+        return result
+    
+    else:
+        raise ValueError(f"Unsupported number of dimensions: {ndim}")
+
+def second_derivative(f, y, axis=0):
+    """Second derivative on a non-uniform y mesh. Operates along *axis* (default 0)."""
+    d2f = np.empty_like(f)
+    h = np.diff(y)
+    h1 = h[:-1]  # left spacing
+    h2 = h[1:]   # right spacing
+
+    # Build generic slicers for the requested axis
+    def _sl(s):
+        idx = [slice(None)] * f.ndim
+        idx[axis] = s
+        return tuple(idx)
+
+    # Broadcast h1, h2 to the correct axis
+    shape = [1] * f.ndim
+    shape[axis] = -1
+    h1b = h1.reshape(shape)
+    h2b = h2.reshape(shape)
+
+    d2f[_sl(slice(1, -1))] = (
+        2 * (f[_sl(slice(2, None))] * h1b
+             - f[_sl(slice(1, -1))] * (h1b + h2b)
+             + f[_sl(slice(None, -2))] * h2b)
+        / (h1b * h2b * (h1b + h2b))
+    )
+    # Boundaries: copy neighbour
+    d2f[_sl(slice(0, 1))] = d2f[_sl(slice(1, 2))]
+    d2f[_sl(slice(-1, None))] = d2f[_sl(slice(-2, -1))]
+    return d2f
+
 # =====================================================================================================================================================
 # Reynolds number functions
 # =====================================================================================================================================================
@@ -111,9 +253,9 @@ def get_Re(case, cases, Re, ux_velocity, flow_forcing, y_coords=None):
         else:
             y = ux_velocity[:, 1]
         if len(Re) > 1:
-            cur_Re = Re[cases.index(case)] * (0.5 * np.trapz(profile, y))
+            cur_Re = Re[cases.index(case)] * (0.5 * np.trapezoid(profile, y))
         else:
-            cur_Re = Re[0] * (0.5 * np.trapz(profile, y))
+            cur_Re = Re[0] * (0.5 * np.trapezoid(profile, y))
     else:
         raise ValueError("flow_forcing must be either 'CMF' or 'CPG'")
     return cur_Re
@@ -211,8 +353,8 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
             raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 1 size {fuh.shape[1]}")
 
         # Integrate over y (wall-normal, axis=1)
-        fuh_y_integrated = np.trapz(fuh, y_coords_1d, axis=1)  # shape: (nz, nx)
-        fu_y_integrated = np.trapz(fu, y_coords_1d, axis=1)    # shape: (nz, nx)
+        fuh_y_integrated = np.trapezoid(fuh, y_coords_1d, axis=1)  # shape: (nz, nx)
+        fu_y_integrated = np.trapezoid(fu, y_coords_1d, axis=1)    # shape: (nz, nx)
 
         # Integrate over z (axis=0). For uniform z, mean vs integral differs by
         # a constant factor that cancels in the ratio.
@@ -226,7 +368,7 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         y_coords_1d = np.asarray(y_coords).ravel()
         if y_coords_1d.size != fuh.shape[0]:
             raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 0 size {fuh.shape[0]}")
-        bulk_enthalpy_x = np.trapz(fuh, y_coords_1d, axis=0) / np.trapz(fu, y_coords_1d, axis=0)
+        bulk_enthalpy_x = np.trapezoid(fuh, y_coords_1d, axis=0) / np.trapezoid(fu, y_coords_1d, axis=0)
         wall_temp = interpolate_wall_point(temp, y_coords=y_coords_1d, wall='lower')
     else:
         raise ValueError("2D or 3D data required for surface integral.")
@@ -251,41 +393,10 @@ def compute_turb_Prandtl_number(ux, uy, uv, T, Tuy, y_coords):
     return (shear_stress / uy_temp_fluc_corr) * (temp_grad / velocity_grad)
 
 # =====================================================================================================================================================
-# TKE Budget terms functions
+# Reynolds Stress Budget terms functions
 # =====================================================================================================================================================
 
-def second_derivative(f, y, axis=0):
-    """Second derivative on a non-uniform y mesh. Operates along *axis* (default 0)."""
-    d2f = np.empty_like(f)
-    h = np.diff(y)
-    h1 = h[:-1]  # left spacing
-    h2 = h[1:]   # right spacing
-
-    # Build generic slicers for the requested axis
-    def _sl(s):
-        idx = [slice(None)] * f.ndim
-        idx[axis] = s
-        return tuple(idx)
-
-    # Broadcast h1, h2 to the correct axis
-    shape = [1] * f.ndim
-    shape[axis] = -1
-    h1b = h1.reshape(shape)
-    h2b = h2.reshape(shape)
-
-    d2f[_sl(slice(1, -1))] = (
-        2 * (f[_sl(slice(2, None))] * h1b
-             - f[_sl(slice(1, -1))] * (h1b + h2b)
-             + f[_sl(slice(None, -2))] * h2b)
-        / (h1b * h2b * (h1b + h2b))
-    )
-    # Boundaries: copy neighbour
-    d2f[_sl(slice(0, 1))] = d2f[_sl(slice(1, 2))]
-    d2f[_sl(slice(-1, None))] = d2f[_sl(slice(-2, -1))]
-    return d2f
-
-
-def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=False):
+def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average_x=False):
     """
     Compute TKE budget term components from XDMF data.
     Naming convention: 1,2,3 are x,y,z. 'prime' denotes fluctuating component.
@@ -479,8 +590,8 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     for i in range(3):
         for j in range(3):
 
-            if prdu[i] is not None:
-                prdu_prime[i, j] = prdu[i] * du_dx[i][j]
+            if prdu[i, j] is not None:
+                prdu_prime[i, j] = prdu[i, j] * du_dx[i][j]
             else:
                 prdu_prime[i, j] = None
 
@@ -569,11 +680,11 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     # buoyancy term
     # ------------------------------------------------------------------
 
-    fu = [get_var('fu1'), get_var('fu2'), get_var('fu3')]
-    f_prime_u_prime = [None] * 3
-    for i in range (3):
-        if fu is not None:
-            f_prime_u_prime = (fu[i] - (dens * u_fields[i]))
+    # fu = [get_var('fu1'), get_var('fu2'), get_var('fu3')]
+    # f_prime_u_prime = [None] * 3
+    # for i in range (3):
+    #     if fu is not None:
+    #         f_prime_u_prime = (fu[i] - (dens * u_fields[i]))
     
     # ------------------------------------------------------------------
     # Output
@@ -599,12 +710,8 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         'mean_conv_tensor_x1': mean_conv_tensor_x1,
         'mean_conv_tensor_x2': mean_conv_tensor_x2,
         'mean_conv_tensor_x3': mean_conv_tensor_x3,
-        'f_prime_u_prime': f_prime_u_prime,
+    #    'f_prime_u_prime': f_prime_u_prime,
     }
-
-# =====================================================================================================================================================
-# Budget term extraction functions (dimension-agnostic on (3,3,...) tensors)
-# =====================================================================================================================================================
 
 def _parse_component(uiuj_str):
     """Parse 'uu12' -> (i=0, j=1)"""
@@ -701,7 +808,8 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total'):
         return {'pressure_strain': 2.0 * np.einsum('ii...->...', S)}
     else:
         i, j = _parse_component(uiuj)
-        return {'pressure_strain': (S[i, j] + S[j, i]) / f}
+        result = S[i, j] + S[j, i]
+        return {'pressure_strain': result if f is None else result / f}
 
 def compute_buoyancy_term(tke_comp_dict, uiuj='total'): # check this
     """
@@ -797,6 +905,18 @@ def analytical_laminar_mhd_prof(case, Re_bulk, Re_tau):
     return prof
 
 # =====================================================================================================================================================
+# Two-point Correlation Analysis
+# =====================================================================================================================================================
+
+# =====================================================================================================================================================
+# Quadrant Analysis
+# =====================================================================================================================================================
+
+# =====================================================================================================================================================
+# Spectral Analysis
+# =====================================================================================================================================================
+
+# =====================================================================================================================================================
 # Vorticity functions
 # =====================================================================================================================================================
 
@@ -815,114 +935,4 @@ def compute_vorticity_omega_z(uy, ux, x, y):
     duxdy = np.gradient(ux, y)
     return duydx - duxdy
 
-def interpolate_cell_to_point_data(data):
-    """
-    Interpolate cell-centred data to point centres.
-    
-    Each point value is the average of all adjacent cells. Interior points use all 2^ndim
-    neighboring cells; boundary points use only adjacent cells.
-    """
-    ndim = data.ndim
-    
-    if ndim == 1:
-        nc = data.shape[0]
-        result = np.zeros(nc + 1, dtype=data.dtype)
-        result[0] = data[0]
-        result[1:-1] = 0.5 * (data[0:-1] + data[1:])
-        result[-1] = data[-1]
-        return result
-    
-    elif ndim == 2:
-        ncy, ncx = data.shape
-        result = np.zeros((ncy + 1, ncx + 1), dtype=data.dtype)
-        
-        # Interior points: average of 4 adjacent cells
-        result[1:-1, 1:-1] = 0.25 * (
-            data[0:-1, 0:-1] + data[0:-1, 1:] +
-            data[1:, 0:-1] + data[1:, 1:]
-        )
-        
-        # Corners
-        result[0, 0] = data[0, 0]
-        result[0, -1] = data[0, -1]
-        result[-1, 0] = data[-1, 0]
-        result[-1, -1] = data[-1, -1]
-        
-        # Edges: average of 2 adjacent cells
-        result[0, 1:-1] = 0.5 * (data[0, 0:-1] + data[0, 1:])
-        result[-1, 1:-1] = 0.5 * (data[-1, 0:-1] + data[-1, 1:])
-        result[1:-1, 0] = 0.5 * (data[0:-1, 0] + data[1:, 0])
-        result[1:-1, -1] = 0.5 * (data[0:-1, -1] + data[1:, -1])
-        
-        return result
-    
-    elif ndim == 3:
-        ncz, ncy, ncx = data.shape
-        result = np.zeros((ncz + 1, ncy + 1, ncx + 1), dtype=data.dtype)
-        
-        # Interior points: average of 8 adjacent cells
-        result[1:-1, 1:-1, 1:-1] = 0.125 * (
-            data[0:-1, 0:-1, 0:-1] + data[0:-1, 0:-1, 1:] +
-            data[0:-1, 1:, 0:-1] + data[0:-1, 1:, 1:] +
-            data[1:, 0:-1, 0:-1] + data[1:, 0:-1, 1:] +
-            data[1:, 1:, 0:-1] + data[1:, 1:, 1:]
-        )
-        
-        # Corners: single cell value
-        result[0, 0, 0] = data[0, 0, 0]
-        result[0, 0, -1] = data[0, 0, -1]
-        result[0, -1, 0] = data[0, -1, 0]
-        result[0, -1, -1] = data[0, -1, -1]
-        result[-1, 0, 0] = data[-1, 0, 0]
-        result[-1, 0, -1] = data[-1, 0, -1]
-        result[-1, -1, 0] = data[-1, -1, 0]
-        result[-1, -1, -1] = data[-1, -1, -1]
-        
-        # Edges (z-parallel, y-parallel, x-parallel): average of 2 cells
-        result[0, 0, 1:-1] = 0.5 * (data[0, 0, 0:-1] + data[0, 0, 1:])
-        result[0, -1, 1:-1] = 0.5 * (data[0, -1, 0:-1] + data[0, -1, 1:])
-        result[-1, 0, 1:-1] = 0.5 * (data[-1, 0, 0:-1] + data[-1, 0, 1:])
-        result[-1, -1, 1:-1] = 0.5 * (data[-1, -1, 0:-1] + data[-1, -1, 1:])
-        
-        result[0, 1:-1, 0] = 0.5 * (data[0, 0:-1, 0] + data[0, 1:, 0])
-        result[0, 1:-1, -1] = 0.5 * (data[0, 0:-1, -1] + data[0, 1:, -1])
-        result[-1, 1:-1, 0] = 0.5 * (data[-1, 0:-1, 0] + data[-1, 1:, 0])
-        result[-1, 1:-1, -1] = 0.5 * (data[-1, 0:-1, -1] + data[-1, 1:, -1])
-        
-        result[1:-1, 0, 0] = 0.5 * (data[0:-1, 0, 0] + data[1:, 0, 0])
-        result[1:-1, 0, -1] = 0.5 * (data[0:-1, 0, -1] + data[1:, 0, -1])
-        result[1:-1, -1, 0] = 0.5 * (data[0:-1, -1, 0] + data[1:, -1, 0])
-        result[1:-1, -1, -1] = 0.5 * (data[0:-1, -1, -1] + data[1:, -1, -1])
-        
-        # Faces (4 cells): xy-faces, xz-faces, yz-faces
-        result[0, 1:-1, 1:-1] = 0.25 * (
-            data[0, 0:-1, 0:-1] + data[0, 0:-1, 1:] +
-            data[0, 1:, 0:-1] + data[0, 1:, 1:]
-        )
-        result[-1, 1:-1, 1:-1] = 0.25 * (
-            data[-1, 0:-1, 0:-1] + data[-1, 0:-1, 1:] +
-            data[-1, 1:, 0:-1] + data[-1, 1:, 1:]
-        )
-        
-        result[1:-1, 0, 1:-1] = 0.25 * (
-            data[0:-1, 0, 0:-1] + data[0:-1, 0, 1:] +
-            data[1:, 0, 0:-1] + data[1:, 0, 1:]
-        )
-        result[1:-1, -1, 1:-1] = 0.25 * (
-            data[0:-1, -1, 0:-1] + data[0:-1, -1, 1:] +
-            data[1:, -1, 0:-1] + data[1:, -1, 1:]
-        )
-        
-        result[1:-1, 1:-1, 0] = 0.25 * (
-            data[0:-1, 0:-1, 0] + data[0:-1, 1:, 0] +
-            data[1:, 0:-1, 0] + data[1:, 1:, 0]
-        )
-        result[1:-1, 1:-1, -1] = 0.25 * (
-            data[0:-1, 0:-1, -1] + data[0:-1, 1:, -1] +
-            data[1:, 0:-1, -1] + data[1:, 1:, -1]
-        )
-        
-        return result
-    
-    else:
-        raise ValueError(f"Unsupported number of dimensions: {ndim}")
+# =====================================================================================================================================================

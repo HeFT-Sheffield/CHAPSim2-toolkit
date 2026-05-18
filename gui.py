@@ -11,12 +11,11 @@ import glob
 import traceback
 
 import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
+matplotlib.use('Agg')
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import numpy as np
 
-# Colours for plain tk widgets not auto-themed by ttkbootstrap (darkly palette)
 _BG       = '#222222'
 _INPUT_BG = '#303030'
 _FG       = '#ffffff'
@@ -301,6 +300,8 @@ class TurbStatsTab(ttk.Frame):
         s = sec('Input Data')
         brow(s, 'Folder path', sv('folder_path', ''))
         crow(s, 'Input format', sv('input_format', 'visu'), ['visu', 'text'])
+        crow(s, 'Data type', sv('xdmf_data_type', 'tsp_avg'),
+             ['tsp_avg', 't_avg', 'inst'])
         self._t_cases = trow(s, 'Cases (one per line)', height=3)
         self._t_cases.insert('1.0', 'Tests')
         self._t_timesteps = trow(s, 'Timesteps (one per line)', height=3)
@@ -341,6 +342,7 @@ class TurbStatsTab(ttk.Frame):
         chk(s, "u'u' Reynolds stress", bv('u_prime_sq_on', False))
         chk(s, "u'v' Reynolds stress", bv('u_prime_v_prime_on', False))
         chk(s, "v'v' Reynolds stress", bv('v_prime_sq_on', False))
+        chk(s, "v'w' Reynolds stress", bv('v_prime_w_prime_on', False))
         chk(s, "w'w' Reynolds stress", bv('w_prime_sq_on', False))
         chk(s, 'Reynolds Stress Budget terms', bv('re_stress_budget_on', False))
         crow(s, 'Budget component', sv('re_stress_component', 'uu11'),
@@ -465,8 +467,9 @@ class TurbStatsTab(ttk.Frame):
             surface_plot_on=v['surface_plot_on'].get(),
             u_prime_sq_on=v['u_prime_sq_on'].get(),
             u_prime_v_prime_on=v['u_prime_v_prime_on'].get(),
-            w_prime_sq_on=v['w_prime_sq_on'].get(),
             v_prime_sq_on=v['v_prime_sq_on'].get(),
+            v_prime_w_prime_on=v['v_prime_w_prime_on'].get(),
+            w_prime_sq_on=v['w_prime_sq_on'].get(),
             re_stress_budget_on=v['re_stress_budget_on'].get(),
             re_stress_component=v['re_stress_component'].get(),
             average_z_direction=v['average_z_direction'].get(),
@@ -480,6 +483,7 @@ class TurbStatsTab(ttk.Frame):
             linear_y_scale=v['linear_y_scale'].get(),
             log_y_scale=v['log_y_scale'].get(),
             multi_plot=v['multi_plot'].get(),
+            xdmf_data_type=v['xdmf_data_type'].get(),
             display_fig=False,          # always embedded; never plt.show()
             save_fig=v['save_fig'].get(),
             save_to_path=v['save_to_path'].get(),
@@ -582,7 +586,7 @@ class TurbStatsTab(ttk.Frame):
                 'ux_velocity_on': True, 'uy_velocity_on': False, 'uz_velocity_on': False,
                 'temp_on': False, 'tke_on': False, 'coeff_friction_on': False,
                 'u_prime_sq_on': False, 'u_prime_v_prime_on': False,
-                'v_prime_sq_on': False, 'w_prime_sq_on': False,
+                'v_prime_sq_on': False, 'v_prime_w_prime_on': False, 'w_prime_sq_on': False,
                 're_stress_budget_on': False, 'heat_transf_coeff_on': False,
                 'Nusselt_number_on': False, 'surface_plot_on': False,
                 'norm_by_u_tau_sq': True, 'norm_ux_by_u_tau': True,
@@ -679,8 +683,9 @@ class TurbStatsTab(ttk.Frame):
             '',
             f"u_prime_sq_on = {v['u_prime_sq_on'].get()}",
             f"u_prime_v_prime_on = {v['u_prime_v_prime_on'].get()}",
-            f"w_prime_sq_on = {v['w_prime_sq_on'].get()}",
             f"v_prime_sq_on = {v['v_prime_sq_on'].get()}",
+            f"v_prime_w_prime_on = {v['v_prime_w_prime_on'].get()}",
+            f"w_prime_sq_on = {v['w_prime_sq_on'].get()}",
             '',
             f"re_stress_budget_on = {v['re_stress_budget_on'].get()}",
             f"re_stress_component = '{v['re_stress_component'].get()}'",
@@ -1228,9 +1233,8 @@ class MonitorPointsTab(ttk.Frame):
                         if T is not None:
                             fields.append(('temperature', T, 'C5'))
 
-                        fig, axes = plt.subplots(len(fields), 1,
-                                                 figsize=(10, 3 * len(fields)),
-                                                 sharex=True)
+                        fig = Figure(figsize=(10, 3 * len(fields)))
+                        axes = fig.subplots(len(fields), 1, sharex=True)
                         for ax, (lbl, arr, col) in zip(axes, fields):
                             _mp_plot_avg(ax, t, arr, lbl, col, window)
                             ax.set_ylabel(lbl)
@@ -1266,8 +1270,8 @@ class MonitorPointsTab(ttk.Frame):
                             if has_th:
                                 gx, T, h = data[:, 3], data[:, 4], data[:, 5]
                             n_sub = 4 if has_th else 2
-                            fig, axes = plt.subplots(n_sub, 1, figsize=(10, 3 * n_sub),
-                                                     sharex=True)
+                            fig = Figure(figsize=(10, 3 * n_sub))
+                            axes = fig.subplots(n_sub, 1, sharex=True)
                             _mp_plot_avg(axes[0], t, MKE, 'Mean Kinetic Energy', 'C0', window)
                             axes[0].set_ylabel('MKE')
                             axes[0].legend(fontsize=7); axes[0].grid(True, alpha=0.4)
@@ -1311,7 +1315,8 @@ class MonitorPointsTab(ttk.Frame):
                             mass_cons = data[:, 1]
                             mass_rt = data[:, 4]
                             ke_rt = data[:, 5]
-                            fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+                            fig = Figure(figsize=(10, 9))
+                            axes = fig.subplots(3, 1, sharex=True)
                             for ax, arr, lbl, col in zip(
                                 axes,
                                 [mass_cons, mass_rt, ke_rt],

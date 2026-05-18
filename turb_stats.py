@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.figure import Figure
 import math
 import os
 from tqdm import tqdm
@@ -61,8 +62,9 @@ class Config:
     surface_plot_on: bool
     u_prime_sq_on: bool
     u_prime_v_prime_on: bool
-    w_prime_sq_on: bool
     v_prime_sq_on: bool
+    v_prime_w_prime_on: bool
+    w_prime_sq_on: bool
 
     re_stress_budget_on: bool
     re_stress_component: str
@@ -89,6 +91,7 @@ class Config:
     ux_velocity_log_ref_on: bool
     mhd_NK_ref_on: bool
     mkm180_ch_ref_on: bool
+    xdmf_data_type: str = 'tsp_avg'
 
     @classmethod
     def from_module(cls, config_module):
@@ -117,8 +120,9 @@ class Config:
             tke_on=getattr(config_module, 'tke_on', False),
             u_prime_sq_on=getattr(config_module, 'u_prime_sq_on', False),
             u_prime_v_prime_on=getattr(config_module, 'u_prime_v_prime_on', False),
-            w_prime_sq_on=getattr(config_module, 'w_prime_sq_on', False),
             v_prime_sq_on=getattr(config_module, 'v_prime_sq_on', False),
+            v_prime_w_prime_on=getattr(config_module, 'v_prime_w_prime_on', False),
+            w_prime_sq_on=getattr(config_module, 'w_prime_sq_on', False),
             profile_direction=getattr(config_module, 'profile_direction', 'y'),
             slice_coords=getattr(config_module, 'slice_coords', ''),
             x_crop=getattr(config_module, 'x_crop', ''),
@@ -145,6 +149,7 @@ class Config:
             ux_velocity_log_ref_on=getattr(config_module, 'ux_velocity_log_ref_on', False),
             mhd_NK_ref_on=getattr(config_module, 'mhd_NK_ref_on', False),
             mkm180_ch_ref_on=getattr(config_module, 'mkm180_ch_ref_on', False),
+            xdmf_data_type=getattr(config_module, 'xdmf_data_type', 'tsp_avg'),
         )
 
 @dataclass
@@ -170,6 +175,7 @@ class PlotConfig:
                 'u_prime_v_prime': '#2ca02c',
                 'w_prime_sq': '#9467bd',
                 'v_prime_sq': '#8c564b',
+                'v_prime_w_prime': "#bf19c5",
             }
 
         if self.colors_2 is None:
@@ -178,9 +184,10 @@ class PlotConfig:
                 'uy_velocity': '#377eb8',
                 'uz_velocity': '#4daf4a',
                 'u_prime_sq': '#ff7f00',
-                'u_prime_v_prime': '#4daf4a',
+                'u_prime_v_prime': "#63ff6b",
                 'w_prime_sq': '#377eb8',
                 'v_prime_sq': '#984ea3',
+                'v_prime_w_prime': "#bf19c5",
             }
 
         if self.colors_3 is None:
@@ -191,7 +198,8 @@ class PlotConfig:
                 'u_prime_sq': '#882255',
                 'u_prime_v_prime': '#117733',
                 'w_prime_sq': '#004488',
-                'v_prime_sq': '#aa4499',
+                'v_prime_sq': "#c25309",
+                'v_prime_w_prime': "#bf19c5",
             }
 
         if self.colors_4 is None:
@@ -203,6 +211,7 @@ class PlotConfig:
                 'u_prime_v_prime': '#1b9e77',
                 'w_prime_sq': '#0c7c59',
                 'v_prime_sq': '#5e3c99',
+                'v_prime_w_prime': "#bf19c5",
             }
 
         if self.colors_blck is None:
@@ -214,6 +223,7 @@ class PlotConfig:
                 'u_prime_v_prime': 'black',
                 'w_prime_sq': 'black',
                 'v_prime_sq': 'black',
+                'v_prime_w_prime': 'black',
             }
 
         if self.budget_colors is None:
@@ -242,6 +252,7 @@ class PlotConfig:
                 "u_prime_sq": "<u'u'>",
                 "u_prime_v_prime": "<u'v'>",
                 "v_prime_sq": "<v'v'>",
+                "v_prime_w_prime": "<v'w'>",
                 "w_prime_sq": "<w'w'>",
                 "TKE": "Turbulent Kinetic Energy",
                 "heat_transfer_coeff": "Heat Transfer Coefficient",
@@ -291,26 +302,15 @@ def create_data_loader(config: Config, data_types: List[str] = None):
     if fmt in ['xdmf', 'visu']:
         required_vars = _build_required_xdmf_vars(config)
         re_stress_enabled = (config.u_prime_sq_on or config.u_prime_v_prime_on or
-                             config.v_prime_sq_on or config.w_prime_sq_on or config.tke_on)
+                             config.v_prime_sq_on or config.v_prime_w_prime_on or
+                             config.w_prime_sq_on or config.tke_on)
         re_stress_budget_enabled = config.re_stress_budget_on
 
         # Build data_types from what is actually enabled so we don't try
         # to read files that may not exist.
-        # Note: tsp_avg data is stored as .txt in 1_data/, not as XDMF.
-        # The t_avg XDMF files contain uu11, uu12, etc. needed for
-        # Reynolds stresses and TKE budget terms.
+        
         if data_types is None:
-            data_types = []
-
-            # t_avg contains Reynolds stresses (uu11 etc.), gradient terms,
-            # and mean velocities — used for both Re-stresses and TKE budgets
-            if re_stress_enabled or re_stress_budget_enabled:
-                data_types.append('t_avg')
-
-            # Profiles-only runs should prefer t_avg, but fall back to
-            # instantaneous files when t_avg files are unavailable.
-            if not data_types:
-                data_types = ['t_avg', 'inst']
+            data_types = [config.xdmf_data_type]
         else:
             data_types = list(data_types)
 
@@ -372,10 +372,16 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
         required.update({'u1', 'u2', 'uu12'})
     if config.v_prime_sq_on:
         required.update({'u2', 'uu22'})
+    if config.v_prime_w_prime_on:
+        required.update({'u2', 'u3', 'uu23'})
     if config.w_prime_sq_on:
         required.update({'u3', 'uu33'})
     if config.tke_on:
         required.update({'u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'})
+    if config.coeff_friction_on:
+        required.add('u1')
+    if config.heat_transf_coeff_on or config.Nusselt_number_on:
+        required.update({'T', 'fuh1', 'fu1'})
 
     # Ensure downstream normalization/flow-info/coordinate logic can run.
     if required:
@@ -759,6 +765,15 @@ class ReynoldsStressuu22(ReStresses):
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         return op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
+    
+class ReynoldsStressuu23(ReStresses):
+    """Reynolds Stress v'w'"""
+
+    def __init__(self):
+        super().__init__('v_prime_w_prime', "<v'w'>", ['u2','u3', 'uu23'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.compute_shear_stress(data_dict['u2'], data_dict['u3'], data_dict['uu23'])
 
 class ReynoldsStressuu33(ReStresses):
     """Reynolds stress w'w'"""
@@ -1019,11 +1034,11 @@ class TurbulentKineticEnergy(Profiles):
         return op.compute_tke(u_prime_sq, v_prime_sq, w_prime_sq)
 
 # =====================================================================================================================================================
-# TKE BUDGET CLASSES
+# REYNOLDS STRESS BUDGET CLASSES
 # =====================================================================================================================================================
 
-class TkeBudget(ABC):
-    """Abstract base class for TKE budget terms"""
+class Budget(ABC):
+    """Abstract base class for Reynolds stress budget terms"""
 
     def __init__(self, name: str, label: str, required_quantities: List[str]):
         self.name = name
@@ -1034,11 +1049,11 @@ class TkeBudget(ABC):
 
     @abstractmethod
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        """Compute the TKE budget term from required data"""
+        """Compute the budget term from required data"""
         pass
 
     def compute_for_case(self, case: str, timestep: str, data_loader: TurbulenceTextData) -> bool:
-        """Compute TKE budget term for a specific case and timestep"""
+        """Compute budget term for a specific case and timestep"""
         # Gather required data
         data_dict = {}
         for quantity in self.required_quantities:
@@ -1057,9 +1072,9 @@ class TkeBudget(ABC):
         return values[:(len(values)//2)]
 
 
-class TkeBudgetComputer:
+class BudgetComputer:
     """
-    Computes all TKE budget terms by calling op.compute_TKE_components once
+    Computes all budget terms by calling op.compute_budget_components once
     and then extracting individual terms via op.compute_* functions.
     """
 
@@ -1100,7 +1115,7 @@ class TkeBudgetComputer:
         """Compute all enabled budget terms for one case/timestep."""
         raw_dict = data_loader.get_raw_dict(case, timestep)
         if raw_dict is None:
-            print(f"No data for TKE budget: {case}, {timestep}")
+            print(f"No data for Reynolds stress budget: {case}, {timestep}")
             return False
 
         y_coords = getattr(data_loader, 'y_coords', None)
@@ -1109,7 +1124,7 @@ class TkeBudgetComputer:
             return False
 
         # Compute all TKE components once
-        tke_comp = op.compute_TKE_components(
+        budget_comp = op.compute_budget_components(
             raw_dict, y_coords,
             average_z=self.average_z, average_x=self.average_x
         )
@@ -1129,7 +1144,7 @@ class TkeBudgetComputer:
         }
 
         for _flag, term_name, _label in self.enabled_terms:
-            result = _compute_fns[term_name](tke_comp)
+            result = _compute_fns[term_name](budget_comp)
             value = next(iter(result.values()))
 
             self.raw_results[term_name][(case, timestep)] = value
@@ -1137,13 +1152,13 @@ class TkeBudgetComputer:
         return True
 
 
-class TkeBudgetTerm:
+class BudgetTerm:
     """
     Thin wrapper around a single budget term so it looks like a stat object
     to the pipeline and plotter.
     """
 
-    def __init__(self, term_name: str, label: str, computer: TkeBudgetComputer):
+    def __init__(self, term_name: str, label: str, computer: BudgetComputer):
         self.name = term_name
         self.label = label
         self._computer = computer
@@ -1165,7 +1180,7 @@ class TkeBudgetTerm:
 
 
 # Placeholder classes for future implementation
-class TKE_Buoyancy(TkeBudget):
+class Buoyancy(Budget):
     """
     TKE Buoyancy term: B = -β gᵢ ⟨u'ᵢT'⟩
 
@@ -1186,7 +1201,7 @@ class TKE_Buoyancy(TkeBudget):
         raise NotImplementedError("Buoyancy term not yet implemented")
 
 
-class TKE_MHD(TkeBudget):
+class MHD(Budget):
     """
     TKE MHD (Lorentz force) term: M = ⟨u'ᵢj'ᵢ⟩ × B / ρ
 
@@ -1217,7 +1232,7 @@ class TurbulenceStatsPipeline:
     def __init__(self, config: Config, data_loader: TurbulenceTextData):
         self.config = config
         self.data_loader = data_loader
-        self.statistics: List[Union[ReStresses, Profiles, TkeBudget]] = []
+        self.statistics: List[Union[ReStresses, Profiles, Budget]] = []
         self._register_statistics()
 
     def _register_statistics(self) -> None:
@@ -1239,6 +1254,9 @@ class TurbulenceStatsPipeline:
 
         if self.config.v_prime_sq_on:
             self.statistics.append(ReynoldsStressuu22())
+
+        if self.config.v_prime_w_prime_on:
+            self.statistics.append(ReynoldsStressuu23())
 
         if self.config.w_prime_sq_on:
             self.statistics.append(ReynoldsStressuu33())
@@ -1269,19 +1287,18 @@ class TurbulenceStatsPipeline:
         if self.config.coeff_friction_on:
             self.statistics.append(FrictionCoefficient(self.config.cases, self.config.Re))
 
-        # TKE Budget terms — single computer, thin wrappers per term
         re_stress_budget_enabled = self.config.re_stress_budget_on
 
         self.budget_computer = None
         if re_stress_budget_enabled:
-            self.budget_computer = TkeBudgetComputer(self.config)
+            self.budget_computer = BudgetComputer(self.config)
             for _flag, term_name, label in self.budget_computer.enabled_terms:
-                self.statistics.append(TkeBudgetTerm(term_name, label, self.budget_computer))
+                self.statistics.append(BudgetTerm(term_name, label, self.budget_computer))
 
     def compute_all(self) -> None:
         """Compute all registered statistics for all cases and timesteps"""
         # Separate regular stats from budget terms
-        regular_stats = [s for s in self.statistics if not isinstance(s, TkeBudgetTerm)]
+        regular_stats = [s for s in self.statistics if not isinstance(s, BudgetTerm)]
         n_budget = len(self.budget_computer.enabled_terms) if self.budget_computer else 0
         total_tasks = len(regular_stats) * len(self.config.cases) * len(self.config.timesteps)
         # Budget: one compute call per case/timestep (covers all terms)
@@ -1358,7 +1375,7 @@ class TurbulenceStatsPipeline:
                         printed_info.add((case, timestep))
                     pbar.update(1)
 
-    def get_statistic(self, name: str) -> Optional[Union[ReStresses, Profiles, TkeBudget]]:
+    def get_statistic(self, name: str) -> Optional[Union[ReStresses, Profiles, Budget]]:
         """Get a specific statistic by name"""
         for stat in self.statistics:
             if stat.name == name:
@@ -1374,7 +1391,7 @@ class TurbulenceStatsPipeline:
             'TkeBudget': []
         }
         for stat in self.statistics:
-            if isinstance(stat, TkeBudgetTerm):
+            if isinstance(stat, BudgetTerm):
                 grouped['ReStressBudget'].append(stat)
                 grouped['TkeBudget'].append(stat)
             elif isinstance(stat, ReStresses):
@@ -1467,6 +1484,7 @@ class TurbulencePlotter:
             'u_prime_sq': "$\\langle u'u' \\rangle/U_{bulk}^2$",
             'u_prime_v_prime': "$\\langle u'v' \\rangle/U_{bulk}^2$",
             'v_prime_sq': "$\\langle v'v' \\rangle/U_{bulk}^2$",
+            'v_prime_w_prime': "$\\langle v'w' \\rangle/U_{bulk}^2$",
             'w_prime_sq': "$\\langle w'w' \\rangle/U_{bulk}^2$",
         }
         base = base_labels.get(stat_name, stat_label)
@@ -1591,14 +1609,14 @@ class TurbulencePlotter:
     # ------------------------------------------------------------------
     # Public entry points
     # ------------------------------------------------------------------
-    def plot(self, statistics: List[Union[ReStresses, Profiles, TkeBudget]], reference_data: Optional[ReferenceData] = None):
+    def plot(self, statistics: List[Union[ReStresses, Profiles, Budget]], reference_data: Optional[ReferenceData] = None):
         """Main plotting method - delegates to single or multi plot"""
         if len(statistics) == 1 or not self.config.multi_plot:
             return self._plot_single_figure(statistics, reference_data)
         else:
             return self._plot_multi_figure(statistics, reference_data)
 
-    def plot_by_class(self, grouped_statistics: Dict[str, List[Union[ReStresses, Profiles, TkeBudget]]],
+    def plot_by_class(self, grouped_statistics: Dict[str, List[Union[ReStresses, Profiles, Budget]]],
                       reference_data: Optional[ReferenceData] = None) -> Dict[str, Any]:
         """Create separate figures for each class type (ReStresses, Profiles, TkeBudget).
 
@@ -1654,7 +1672,7 @@ class TurbulencePlotter:
         self._reset_color_cycle()
 
         # ---- TKE Budget: all terms on a single axes ----
-        is_budget = all(isinstance(s, TkeBudgetTerm) for s in statistics)
+        is_budget = all(isinstance(s, BudgetTerm) for s in statistics)
         if is_budget:
             return self._plot_budget_figure(statistics, title)
 
@@ -1662,19 +1680,15 @@ class TurbulencePlotter:
         n_stats = len(statistics)
 
         if n_stats == 1:
-            fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
-            fig.canvas.manager.set_window_title(title)
+            fig = Figure(figsize=(10, 6), constrained_layout=True)
+            ax = fig.add_subplot(111)
             axs = np.array([[ax]])
             nrows, ncols = 1, 1
         else:
             ncols = math.ceil(math.sqrt(n_stats))
             nrows = math.ceil(n_stats / ncols)
-            fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(15, 10), constrained_layout=True)
-            fig.canvas.manager.set_window_title(title)
-            if nrows == 1 and ncols == 1:
-                axs = np.array([[axs]])
-            elif nrows == 1 or ncols == 1:
-                axs = axs.reshape(nrows, ncols)
+            fig = Figure(figsize=(15, 10), constrained_layout=True)
+            axs = np.array(fig.subplots(nrows=nrows, ncols=ncols, squeeze=False))
 
         for i, stat in enumerate(statistics):
             row = i // ncols
@@ -1722,8 +1736,8 @@ class TurbulencePlotter:
     def _plot_budget_figure(self, statistics, title: str):
         """Plot all TKE budget terms on a single axes."""
         component = self.config.re_stress_component
-        fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
-        fig.canvas.manager.set_window_title(f'{title} ({component})')
+        fig = Figure(figsize=(10, 6), constrained_layout=True)
+        ax = fig.add_subplot(111)
 
         for stat in statistics:
             for (case, timestep), values in stat.processed_results.items():
@@ -1752,62 +1766,56 @@ class TurbulencePlotter:
         self._apply_axis_text_style(ax)
         return fig
 
-    def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, TkeBudget]],
+    def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, Budget]],
                            reference_data: Optional[ReferenceData] = None):
         """Create a single combined plot for all statistics"""
         self._reset_color_cycle()
-        plt.figure(figsize=(10, 6))
-        plt.gcf().canvas.manager.set_window_title('Turbulence Statistics')
+        fig = Figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
 
         for stat in statistics:
             for (case, timestep), values in stat.processed_results.items():
 
-                # Get y coordinates
                 y_plus = self._get_y_plus(case, timestep)
                 if y_plus is None:
                     continue
 
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
-                    # Get plotting aesthetics
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
+                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
-                    # Plot main data
-                    self._plot_line(plt, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
-
-                # Plot reference data
                 if reference_data:
-                    self._plot_reference_data(plt, stat.name, case, reference_data)
+                    self._plot_reference_data(ax, stat.name, case, reference_data)
 
-                # Add log scale reference lines
                 if stat.name == 'ux_velocity' and self.config.ux_velocity_log_ref_on and self.config.log_y_scale:
-                    self._plot_log_reference_lines(plt, y_plus)
+                    self._plot_log_reference_lines(ax, y_plus)
 
-        plt.xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
- 
+        ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
+
         if len(statistics) == 1:
-            plt.ylabel(
+            ax.set_ylabel(
                 self._get_stat_ylabel(statistics[0].name, statistics[0].label),
                 fontsize=self._get_axis_label_fontsize()
             )
         else:
             if self.config.norm_by_u_tau_sq:
-                plt.ylabel('Statistic value / $u_\\tau^2$', fontsize=self._get_axis_label_fontsize())
+                ax.set_ylabel('Statistic value / $u_\\tau^2$', fontsize=self._get_axis_label_fontsize())
             else:
-                plt.ylabel('Statistic value', fontsize=self._get_axis_label_fontsize())
+                ax.set_ylabel('Statistic value', fontsize=self._get_axis_label_fontsize())
 
-        plt.legend(fontsize=self._get_legend_fontsize())
+        ax.legend(fontsize=self._get_legend_fontsize())
         if self.config.large_text_on:
-            plt.xticks(fontsize=16)
-            plt.yticks(fontsize=16)
-        plt.grid(True)
+            ax.tick_params(axis='x', labelsize=16)
+            ax.tick_params(axis='y', labelsize=16)
+        ax.grid(True)
 
-        return plt.gcf()
+        return fig
 
-    def _plot_multi_figure(self, statistics: List[Union[ReStresses, Profiles, TkeBudget]],
+    def _plot_multi_figure(self, statistics: List[Union[ReStresses, Profiles, Budget]],
                           reference_data: Optional[ReferenceData] = None):
         """Create separate subplots for each statistic"""
         self._reset_color_cycle()
@@ -1815,17 +1823,8 @@ class TurbulencePlotter:
         ncols = math.ceil(math.sqrt(n_stats))
         nrows = math.ceil(n_stats / ncols)
 
-        fig, axs = plt.subplots(
-            nrows=nrows, ncols=ncols, figsize=(15, 10),
-            constrained_layout=True
-        )
-        fig.canvas.manager.set_window_title('Turbulence Statistics')
-
-        # Ensure axs is always 2D array
-        if nrows == 1 and ncols == 1:
-            axs = np.array([[axs]])
-        elif nrows == 1 or ncols == 1:
-            axs = axs.reshape(nrows, ncols)
+        fig = Figure(figsize=(15, 10), constrained_layout=True)
+        axs = np.array(fig.subplots(nrows=nrows, ncols=ncols, squeeze=False))
 
         # Plot each statistic
         for i, stat in enumerate(statistics):
@@ -1909,7 +1908,8 @@ class TurbulencePlotter:
 
                 X, Y = np.meshgrid(x_coords, y)
 
-                fig, ax = plt.subplots(figsize=(12, 5), constrained_layout=True)
+                fig = Figure(figsize=(12, 5), constrained_layout=True)
+                ax = fig.add_subplot(111)
                 cf = ax.contourf(X, Y, values, levels=64, cmap='RdBu_r')
                 cbar = fig.colorbar(cf, ax=ax)
                 cbar.set_label(stat.label, fontsize=self._get_axis_label_fontsize())
@@ -1919,7 +1919,6 @@ class TurbulencePlotter:
                 ax.set_ylabel('$y$', fontsize=self._get_axis_label_fontsize())
                 ax.set_title(f'{stat.label}  ({case}, t={timestep})', fontsize=self._get_title_fontsize())
                 self._apply_axis_text_style(ax)
-                fig.canvas.manager.set_window_title(f'{title} - {stat.label} surface')
 
                 key = f'{stat.name}_surface_{case}_{timestep}'
                 figures[key] = fig
@@ -1954,16 +1953,8 @@ class TurbulencePlotter:
         ncols = math.ceil(math.sqrt(n_stats))
         nrows = math.ceil(n_stats / ncols)
 
-        fig, axs = plt.subplots(nrows=nrows, ncols=ncols,
-                                figsize=(15, 4 * nrows), constrained_layout=True)
-        fig.canvas.manager.set_window_title(f'{title} - X Profiles')
-
-        if n_stats == 1:
-            axs = np.array([[axs]])
-        elif nrows == 1 or ncols == 1:
-            axs = np.atleast_2d(axs)
-            if axs.shape[0] == 1 and nrows > 1:
-                axs = axs.T
+        fig = Figure(figsize=(15, 4 * nrows), constrained_layout=True)
+        axs = np.array(fig.subplots(nrows=nrows, ncols=ncols, squeeze=False))
 
         for i, stat in enumerate(stats_with_x_profiles):
             ax = axs[i // ncols, i % ncols]
