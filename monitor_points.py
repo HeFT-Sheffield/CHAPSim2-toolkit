@@ -25,17 +25,10 @@ def compute_robust_ylim(data, padding=0.05, max_decades=3.0):
     """
     Compute robust y-axis limits by masking diverged data points.
     
-    Uses the Median Absolute Deviation (MAD) — a robust measure of spread
-    that is insensitive to extreme outliers — to identify the scale of the
+    Uses the Median Absolute Deviation to identify the scale of the
     'physical' data.  Points whose distance from the median exceeds
     10^max_decades times the MAD are considered diverged and excluded.
     The y-limits are then set to the full range of the remaining data.
-    
-    This correctly handles:
-      - Strong turbulence growing from ~1 to ~10 (not clipped)
-      - Diverged simulations with values ~1e6+ (clipped)
-      - Restarts after divergence, where the file contains a divergence
-        spike in the middle followed by good (possibly turbulent) data
     
     Parameters
     ----------
@@ -91,7 +84,7 @@ def compute_robust_ylim(data, padding=0.05, max_decades=3.0):
 
 def apply_robust_ylim(ax, data):
     """
-    Apply robust y-limits to a matplotlib axis if divergence is detected.
+    Apply diverged y-limits to a matplotlib axis if divergence is detected.
     Adds a text annotation when limits are clipped.
     """
     limits = compute_robust_ylim(data)
@@ -126,40 +119,56 @@ def add_stats_box(ax, data):
 
 def running_average(data, window):
     """
-    Compute a centred running average using a uniform convolution kernel.
-    Returns an array the same length as data (edges use shrinking windows).
+    Compute a centred running average using a cumulative-sum approach: O(n)
+    instead of O(n × window) for convolution. Edges are padded with the
+    boundary value so the output length equals the input length.
     """
     if window <= 1:
         return data.copy()
-    kernel = np.ones(window) / window
-    # 'same' keeps output length equal to input; edge effects are minor
-    padded = np.pad(data, (window // 2, window - 1 - window // 2), mode='edge')
-    return np.convolve(padded, kernel, mode='valid')
+    n = len(data)
+    pad_l = window // 2
+    pad_r = window - 1 - pad_l
+    padded = np.pad(data.astype(float), (pad_l, pad_r), mode='edge')
+    cumsum = np.empty(len(padded) + 1, dtype=float)
+    cumsum[0] = 0.0
+    np.cumsum(padded, out=cumsum[1:])
+    return (cumsum[window:window + n] - cumsum[:n]) / window
 
 
 def plot_with_avg(ax, time, data, label, color, window):
     """
     Plot raw data and, if a running average window is set, overlay the
-    smoothed curve.
+    running average.
     """
-    ax.plot(time, data, label=label, linewidth=1.0, color=color)
+    ax.plot(time, data, label=label, linewidth=0.8, color=color, rasterized=True)
     if window > 1:
         avg = running_average(data, window)
         ax.plot(time, avg, label=f'{label} (avg, n={window})',
-                linewidth=0.5, color='black', linestyle='--', alpha=0.5)
+                linewidth=1.2, color='black', linestyle='--', alpha=0.7,
+                rasterized=True)
 
 
-def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE):
-    """Load monitor data and drop diverged/invalid rows.
-
-    Rows are skipped when:
-      - Any column is NaN/Inf
-      - Any non-time column has abs(value) > max_abs_value
+def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE, sample=1):
     """
-    data = np.genfromtxt(file_path, skip_header=skiprows, invalid_raise=False, ndmin=2)
+    Load monitor data and drop diverged/invalid rows.
+    Sample > 1 skips rows during parsing.
 
-    if data.size == 0 or data.shape[1] == 0:
-        print(f"Warning: No parseable data in {os.path.basename(file_path)}")
+    """
+    try:
+        with open(file_path, 'r') as f:
+            for _ in range(skiprows):
+                f.readline()
+            lines = f if sample <= 1 else (
+                line for i, line in enumerate(f) if i % sample == 0
+            )
+            data = np.loadtxt(lines, dtype=np.float64)
+    except Exception as e:
+        print(f"Warning: Could not load {os.path.basename(file_path)}: {e}")
+        return np.empty((0, 0))
+
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.size == 0:
         return np.empty((0, 0))
 
     finite_mask = np.all(np.isfinite(data), axis=1)
@@ -240,13 +249,12 @@ blk_files = ['domain1_monitor_metrics_history.log', 'domain1_monitor_change_hist
  
 if plt_pts:
     for file in pt_files:
-        data = load_monitor_data(path + file, skiprows=3)
+        data = load_monitor_data(path + file, skiprows=3, sample=sample_factor)
 
         if data.size == 0:
             print(f"Skipping {file}: no valid data after filtering.")
             continue
-        
-        data = data[::sample_factor] # sample data for plotting
+
         print(f'Plotting {len(data)} points for {file}...')
 
         time = data[:,0]
@@ -325,13 +333,11 @@ if plt_pts:
 
 if plt_bulk:
     for file in blk_files:
-        blk_data = load_monitor_data(path + file, skiprows=2)
+        blk_data = load_monitor_data(path + file, skiprows=2, sample=sample_factor)
 
         if blk_data.size == 0:
             print(f"Skipping {file}: no valid data after filtering.")
             continue
-        
-        blk_data = blk_data[::sample_factor] # sample data for plotting
 
         if file == 'domain1_monitor_metrics_history.log':
             time = blk_data[:,0]

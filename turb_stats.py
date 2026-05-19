@@ -8,7 +8,6 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass
 import numpy as np
 import matplotlib as mpl
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.figure import Figure
 import math
@@ -2169,6 +2168,7 @@ class TurbulencePlotter:
     def display_figure(self) -> None:
         """Display figure"""
         print('Displaying figure...')
+        import matplotlib.pyplot as plt
         plt.show()
 
 

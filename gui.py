@@ -77,6 +77,12 @@ class FigurePanel(ttk.Frame):
         self._toolbar = None
 
     def show(self, fig):
+        if self._canvas is not None:
+            self._canvas.get_tk_widget().destroy()
+            self._canvas = None
+        if self._toolbar is not None:
+            self._toolbar.destroy()
+            self._toolbar = None
         for w in self.winfo_children():
             w.destroy()
         self._canvas = FigureCanvasTkAgg(fig, master=self)
@@ -86,6 +92,12 @@ class FigurePanel(ttk.Frame):
         self._canvas.draw()
 
     def reset(self):
+        if self._canvas is not None:
+            self._canvas.get_tk_widget().destroy()
+            self._canvas = None
+        if self._toolbar is not None:
+            self._toolbar.destroy()
+            self._toolbar = None
         for w in self.winfo_children():
             w.destroy()
         self._placeholder = ttk.Label(self, text=self._placeholder_text, anchor='center')
@@ -93,18 +105,24 @@ class FigurePanel(ttk.Frame):
 
 
 class TextRedirect:
-    """Redirect stdout/stderr to a ScrolledText widget."""
+    """Redirect stdout/stderr to a ScrolledText widget, thread-safely."""
 
     def __init__(self, widget):
         self._w = widget
 
     def write(self, msg):
-        self._w.configure(state='normal')
-        self._w.insert(tk.END, msg)
-        self._w.see(tk.END)
-        self._w.configure(state='disabled')
+        # Schedule all Tk operations on the main thread — never call Tk from a worker thread.
         try:
-            self._w.update_idletasks()
+            self._w.after(0, self._append, msg)
+        except Exception:
+            pass
+
+    def _append(self, msg):
+        try:
+            self._w.configure(state='normal')
+            self._w.insert(tk.END, msg)
+            self._w.see(tk.END)
+            self._w.configure(state='disabled')
         except tk.TclError:
             pass
 
@@ -135,9 +153,20 @@ def _log_to(widget, msg):
 # global-level code at import time)
 # =====================================================================================
 
-def _mp_load(file_path, skiprows, max_val=1e5):
-    data = np.genfromtxt(file_path, skip_header=skiprows, invalid_raise=False, ndmin=2)
-    if data.size == 0 or data.shape[1] == 0:
+def _mp_load(file_path, skiprows, max_val=1e5, sample=1):
+    try:
+        with open(file_path, 'r') as f:
+            for _ in range(skiprows):
+                f.readline()
+            lines = f if sample <= 1 else (
+                line for i, line in enumerate(f) if i % sample == 0
+            )
+            data = np.loadtxt(lines, dtype=np.float64)
+    except Exception:
+        return np.empty((0, 0))
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.size == 0:
         return np.empty((0, 0))
     finite = np.all(np.isfinite(data), axis=1)
     within = (np.all(np.abs(data[:, 1:]) <= max_val, axis=1)
@@ -148,9 +177,14 @@ def _mp_load(file_path, skiprows, max_val=1e5):
 def _mp_running_avg(data, window):
     if window <= 1:
         return data.copy()
-    kernel = np.ones(window) / window
-    padded = np.pad(data, (window // 2, window - 1 - window // 2), mode='edge')
-    return np.convolve(padded, kernel, mode='valid')
+    n = len(data)
+    pad_l = window // 2
+    pad_r = window - 1 - pad_l
+    padded = np.pad(data.astype(float), (pad_l, pad_r), mode='edge')
+    cumsum = np.empty(len(padded) + 1, dtype=float)
+    cumsum[0] = 0.0
+    np.cumsum(padded, out=cumsum[1:])
+    return (cumsum[window:window + n] - cumsum[:n]) / window
 
 
 def _mp_robust_ylim(data, padding=0.05, max_decades=3.0):
@@ -191,10 +225,11 @@ def _mp_stats_box(ax, data):
 
 
 def _mp_plot_avg(ax, t, d, label, color, window):
-    ax.plot(t, d, label=label, linewidth=0.8, color=color)
+    ax.plot(t, d, label=label, linewidth=0.8, color=color, rasterized=True)
     if window > 1:
         ax.plot(t, _mp_running_avg(d, window), label=f'{label} (avg)',
-                linewidth=1.2, color='black', linestyle='--', alpha=0.6)
+                linewidth=1.2, color='black', linestyle='--', alpha=0.6,
+                rasterized=True)
 
 
 # =====================================================================================
@@ -1213,11 +1248,10 @@ class MonitorPointsTab(ttk.Frame):
                         if not os.path.exists(fpath):
                             self._log(f'Not found: {fname}')
                             continue
-                        data = _mp_load(fpath, skiprows=3)
+                        data = _mp_load(fpath, skiprows=3, sample=sample)
                         if data.size == 0:
                             self._log(f'No valid data in {fname}')
                             continue
-                        data = data[::sample]
                         self._log(f'Plotting {len(data)} points for {fname}…')
 
                         t = data[:, 0]
@@ -1258,10 +1292,9 @@ class MonitorPointsTab(ttk.Frame):
                         if not os.path.exists(fpath):
                             self._log(f'Not found: {fname}')
                             continue
-                        data = _mp_load(fpath, skiprows=2)
+                        data = _mp_load(fpath, skiprows=2, sample=sample)
                         if data.size == 0:
                             continue
-                        data = data[::sample]
 
                         if 'metrics' in fname:
                             t = data[:, 0]
