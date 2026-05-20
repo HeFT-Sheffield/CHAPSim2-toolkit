@@ -11,7 +11,7 @@ def _extract_val(data):
         return data[:, 2]
     return data
 
-def _compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
+def compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
     """Compute wall shear stress quantities from near-wall velocity data.
 
     For nD native arrays the wall gradient is computed from the first two
@@ -232,6 +232,9 @@ def second_derivative(f, y, axis=0):
     d2f[_sl(slice(0, 1))] = d2f[_sl(slice(1, 2))]
     d2f[_sl(slice(-1, None))] = d2f[_sl(slice(-2, -1))]
     return d2f
+
+def compute_inst_fluc(inst_field, t_avg_field):
+    return inst_field - t_avg_field
 
 # =====================================================================================================================================================
 # Reynolds number functions
@@ -591,7 +594,7 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
         for j in range(3):
 
             if prdu[i, j] is not None:
-                prdu_prime[i, j] = prdu[i, j] * du_dx[i][j]
+                prdu_prime[i, j] = prdu[i, j] - pr * du_dx[i][j]
             else:
                 prdu_prime[i, j] = None
 
@@ -742,7 +745,7 @@ def compute_dissipation(Re, tke_comp_dict, uiuj='total'):
     """Dissipation: ε_ij = -(2/Re) * ⟨(∂u'_i/∂x_k)(∂u'_j/∂x_k)⟩"""
     D = tke_comp_dict['dissipation_tensor']
     if uiuj == 'total':
-        dissipation = -(2.0 / Re) * np.trace(D)
+        dissipation = -(1.0 / Re) * np.trace(D)
     else:
         i, j = _parse_component(uiuj)
         dissipation = -(2.0 / Re) * D[i, j]
@@ -755,7 +758,7 @@ def compute_mean_convection(tke_comp_dict, uiuj='total'):
     C3 = tke_comp_dict['mean_conv_tensor_x3']
     total = C1 + C2 + C3
     if uiuj == 'total':
-        return {'mean_convection': -np.trace(total)}
+        return {'mean_convection': -0.5 * np.trace(total)}
     else:
         i, j = _parse_component(uiuj)
         return {'mean_convection': -total[i, j]}
@@ -767,7 +770,7 @@ def compute_turbulent_convection(tke_comp_dict, uiuj='total'):
     T3 = tke_comp_dict['turb_conv_tensor_x3']
     total = T1 + T2 + T3
     if uiuj == 'total':
-        return {'turbulent_convection': -np.trace(total)}
+        return {'turbulent_convection': -0.5 * np.trace(total)}
     else:
         i, j = _parse_component(uiuj)
         return {'turbulent_convection': -total[i, j]}
@@ -788,24 +791,24 @@ def compute_pressure_transport(tke_comp_dict, uiuj='total'): # think this needs 
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
     P = tke_comp_dict['press_velocity_fluc_grad_tensor']
     if uiuj == 'total':
-        return {'pressure_transport': -2 * np.trace(P)}
+        return {'pressure_transport': -np.trace(P)}
     else:
         i, j = _parse_component(uiuj)
         return {'pressure_transport': -(P[i, j] + P[j, i])}
 
 def compute_pressure_strain(tke_comp_dict, uiuj='total'):
     """
-    Pressure strain: Π_ij = ⟨p'(∂u'_i/∂x_j + ∂u'_j/∂x_i) / rho⟩
+    Pressure strain: Π_ij = ⟨p'(∂u'_i/∂x_j + ∂u'_j/∂x_i)⟩ / ⟨ρ⟩
 
     Uses the pressure_strain_tensor S[i,j] = ⟨p' ∂u'_i/∂x_j⟩
-    so that Π_ij = S[i,j] + S[j,i].
-    For total (trace): Π_kk = 2 * trace(S) = 2⟨p' ∂u'_k/∂x_k⟩ = 0
-    by incompressibility (∂u'_k/∂x_k = 0).{\displaystyle \mathrm {Ri} ={\frac {g\beta (T_{\text{hot}}-T_{\text{ref}})L}{v^{2}}},}
-    """
+    so that Π_ij = (S[i,j] + S[j,i]) / ⟨ρ⟩.
+    TKE total = 0.5 * Π_ii = trace(S) / ⟨ρ⟩, which → 0 by incompressibility.
+    """ 
     f = tke_comp_dict['f']
     S = tke_comp_dict['pressure_strain_tensor']
     if uiuj == 'total':
-        return {'pressure_strain': 2.0 * np.einsum('ii...->...', S)}
+        result = np.einsum('ii...->...', S)
+        return {'pressure_strain': result if f is None else result / f}
     else:
         i, j = _parse_component(uiuj)
         result = S[i, j] + S[j, i]
@@ -858,17 +861,17 @@ def dimensionalize_temperature(temp_data, ref_temp, norm_temp_by_ref_temp):
     return temp_arr * float(ref_temp)
 
 def norm_turb_stat_wrt_u_tau_sq(ux_data, turb_stat, Re_bulk, y_coords=None):
-    _, u_tau_sq, _ = _compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
+    _, u_tau_sq, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
     return np.divide(np.asarray(turb_stat), u_tau_sq)
 
 def norm_ux_velocity_wrt_u_tau(ux_data, Re_bulk, y_coords=None):
-    u_tau, _, _ = _compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
+    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
     profile = ux_data if y_coords is not None else ux_data[:, 2]
     return np.divide(np.asarray(profile), u_tau)
 
 def norm_y_to_y_plus(y, ux_data, Re_bulk, y_coords=None):
     Re_bulk = int(Re_bulk)
-    u_tau, _, _ = _compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
+    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
     return y * u_tau * Re_bulk
 
 def symmetric_average(arr):
