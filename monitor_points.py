@@ -236,7 +236,7 @@ plt_pts = get_yes_no("Plot monitor points?", 'y')
 plt_bulk = get_yes_no("Plot bulk/change history?", 'y')
 display_plots = get_yes_no("Display plots interactively?", 'n')
 auto_ylim = get_yes_no("Auto-limit y-axis range for diverged data?", 'y')
-avg_window = get_int("Running average window size (1 = off)", 5000)
+avg_window = get_int("Running average window size (1 = off)", 0)
 
 print("-" * 100)
 print()
@@ -257,14 +257,14 @@ if plt_pts:
 
         print(f'Plotting {len(data)} points for {file}...')
 
-        time = data[:,0]
-        u = data[:,1]
-        v = data[:,2]
-        w = data[:,3]
-        p = data[:,4]
-        phi = data[:,5]
+        time = data[:,1]
+        u = data[:,2]
+        v = data[:,3]
+        w = data[:,4]
+        p = data[:,5]
+        phi = data[:,6]
         if thermo_on:
-            T = data[:,6]
+            T = data[:,7]
 
         # Create subplots for all variables
         num_subplots = 6 if thermo_on else 5

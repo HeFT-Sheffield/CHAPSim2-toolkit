@@ -376,7 +376,7 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
     else:
         raise ValueError("2D or 3D data required for surface integral.")
 
-    fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x, ref_temp)  # dimensional fluid temp
+    fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x, ref_temp)  # dimensional bulk temperature
     wall_temp = wall_temp * ref_temp
 
     return heat_flux / (wall_temp - fluid_temp)
@@ -390,9 +390,15 @@ def compute_temp_fluc(T, TT):
 
 def compute_turb_Prandtl_number(ux, uy, uv, T, Tuy, y_coords):
     shear_stress = compute_shear_stress(ux, uy, uv)
-    temp_grad = np.gradient(T, axis=y_coords)
-    velocity_grad = np.gradient(ux, axis=y_coords)
     uy_temp_fluc_corr = compute_shear_stress(T, uy, Tuy)
+    ux_val = _extract_val(ux)
+    T_val = _extract_val(T)
+    if y_coords is not None:
+        velocity_grad = np.gradient(ux_val, y_coords, axis=0) # this isn't correct for 3D data.
+        temp_grad = np.gradient(T_val, y_coords, axis=0)
+    else:
+        velocity_grad = np.gradient(ux_val)
+        temp_grad = np.gradient(T_val)
     return (shear_stress / uy_temp_fluc_corr) * (temp_grad / velocity_grad)
 
 # =====================================================================================================================================================
@@ -470,6 +476,7 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     # Mean velocities and pressure
     # ------------------------------------------------------------------
     u1, u2, u3 = get_var('u1'), get_var('u2'), get_var('u3')
+    u_fields = [u1, u2, u3]
 
     def _or_zero(val):
         """Replace None with a zeros array shaped like u1."""
@@ -479,14 +486,13 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     dens = get_var('f')
 
     # Mean velocity gradient tensor dU_i/dx_j  (shape: 3,3,...)
-    du_dx = [[None]*3 for _ in range(3)]
-    u_fields = [u1, u2, u3]
-    grad_fns = [grad_x, grad_y, grad_z]
-    for i in range(3):
-        for j in range(3):
-            du_dx[i][j] = grad_fns[j](u_fields[i])
+    dudx_names = {(0,0): 'dudx11', (0,1): 'dudx12', (0,2): 'dudx13',
+                    (1,0): 'dudx21', (1,1): 'dudx22', (1,2): 'dudx23',
+                    (2,0): 'dudx31', (2,1): 'dudx32', (2,2): 'dudx33'}
 
-    mean_velocity_grad_tensor = np.array(du_dx)
+    dudx = {}
+    for (i, j), name in dudx_names.items():
+        dudx[i, j] = get_var(name)
 
     # ------------------------------------------------------------------
     # Velocity correlations ⟨uᵢuⱼ⟩ and Reynolds stress fluctuations
@@ -511,6 +517,11 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     ])
 
     # ------------------------------------------------------------------
+    # Reynolds stress gradients  d⟨u'ᵢu'ⱼ⟩/dx_k
+    # ------------------------------------------------------------------
+    grad_fns = [grad_x, grad_y, grad_z]
+
+    # ------------------------------------------------------------------
     # Fluctuating velocity rms and its gradient tensor
     # ------------------------------------------------------------------
     u_prime_rms = [None]*3
@@ -523,10 +534,7 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
         for j in range(3):
             fluc_grad[i][j] = grad_fns[j](u_prime_rms[i])
     fluc_velocity_grad_tensor = np.array(fluc_grad)
-
-    # ------------------------------------------------------------------
-    # Reynolds stress gradients  d⟨u'ᵢu'ⱼ⟩/dx_k
-    # ------------------------------------------------------------------
+    
     dR = {}  # (i, j, k) -> array
     for (i, j) in uu_names.keys():
         for k in range(3):
@@ -574,7 +582,9 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     for i in range(3):
         for j in range(3):
             press_grad[i][j] = grad_fns[j](pru_prime[i])
-    press_velocity_fluc_grad_tensor = np.array(press_grad)
+    press_velocity_fluc_grad_tensor = np.array([
+        [_or_zero(press_grad[i][j]) for j in range(3)] for i in range(3)
+    ])
 
     # ------------------------------------------------------------------
     # Pressure-strain correlation tensor  ⟨p' ∂u'ᵢ/∂xⱼ⟩
@@ -594,7 +604,7 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
         for j in range(3):
 
             if prdu[i, j] is not None:
-                prdu_prime[i, j] = prdu[i, j] - pr * du_dx[i][j]
+                prdu_prime[i, j] = prdu[i, j] - pr * dudx[i, j]
             else:
                 prdu_prime[i, j] = None
 
@@ -619,8 +629,8 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     for (i, j) in dudu_names.keys():
         val = None
         for k in range(3):
-            if du_dx[i][k] is not None and du_dx[j][k] is not None:
-                term = du_dx[i][k] * du_dx[j][k]
+            if dudx[i, k] is not None and dudx[j, k] is not None:
+                term = dudx[i, k] * dudx[j, k]
                 val = term if val is None else val + term
         dudu_mean[i, j] = dudu_mean[j, i] = val
 
@@ -680,15 +690,35 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     turb_conv_tensor_x3 = _build_sym_tensor(lambda i, j: _or_zero(_turb_conv_component(i, j, 2)))
 
     # ------------------------------------------------------------------
-    # buoyancy term
+    # buoyancy: <f'u'_i> = <fu_i> - <f><u_i>
     # ------------------------------------------------------------------
 
-    # fu = [get_var('fu1'), get_var('fu2'), get_var('fu3')]
-    # f_prime_u_prime = [None] * 3
-    # for i in range (3):
-    #     if fu is not None:
-    #         f_prime_u_prime = (fu[i] - (dens * u_fields[i]))
-    
+    fu = [get_var('fu1'), get_var('fu2'), get_var('fu3')]
+    f_prime_u_prime = [None] * 3
+    for i in range(3):
+        if fu[i] is not None and dens is not None:
+            f_prime_u_prime[i] = fu[i] - dens * u_fields[i]
+
+    # ------------------------------------------------------------------
+    # mhd: <u'_i j'_l> = <u_i j_l> - <u_i><j_l>
+    # ------------------------------------------------------------------
+
+    j_fields = [get_var('j1'), get_var('j2'), get_var('j3')]
+    uj_raw = {(i, l): get_var(f'ju{i+1}{l+1}') for i in range(3) for l in range(3)}
+
+    u_j_prime = {}
+    for i in range(3):
+        for l in range(3):
+            if uj_raw[i, l] is not None and j_fields[l] is not None:
+                u_j_prime[i, l] = uj_raw[i, l] - u_fields[i] * j_fields[l]
+            else:
+                u_j_prime[i, l] = None
+
+    u_j_prime_tensor = np.array([
+        [_or_zero(u_j_prime[i, l]) for l in range(3)]
+        for i in range(3)
+    ])
+
     # ------------------------------------------------------------------
     # Output
     # ------------------------------------------------------------------
@@ -698,7 +728,7 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
         'pr': pr,
         'f' : dens,
         'TKE': tke,
-        'mean_velocity_grad_tensor': mean_velocity_grad_tensor,
+        'mean_velocity_grad_tensor': np.array([[_or_zero(dudx[i, j]) for j in range(3)] for i in range(3)]),
         'fluc_velocity_grad_tensor': fluc_velocity_grad_tensor,
         'reynolds_stress_tensor': reynolds_stress_tensor,
         'lap_re_stress_tensor_x1': lap_re_stress_tensor_x1,
@@ -713,7 +743,8 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
         'mean_conv_tensor_x1': mean_conv_tensor_x1,
         'mean_conv_tensor_x2': mean_conv_tensor_x2,
         'mean_conv_tensor_x3': mean_conv_tensor_x3,
-    #    'f_prime_u_prime': f_prime_u_prime,
+        'f_prime_u_prime': f_prime_u_prime,
+        'u_j_prime_tensor': u_j_prime_tensor,
     }
 
 def _parse_component(uiuj_str):
@@ -802,7 +833,7 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total'):
 
     Uses the pressure_strain_tensor S[i,j] = ⟨p' ∂u'_i/∂x_j⟩
     so that Π_ij = (S[i,j] + S[j,i]) / ⟨ρ⟩.
-    TKE total = 0.5 * Π_ii = trace(S) / ⟨ρ⟩, which → 0 by incompressibility.
+    TKE total = 0.5 * Π_ii = trace(S) / ⟨ρ⟩ = 0.
     """ 
     f = tke_comp_dict['f']
     S = tke_comp_dict['pressure_strain_tensor']
@@ -812,38 +843,64 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total'):
     else:
         i, j = _parse_component(uiuj)
         result = S[i, j] + S[j, i]
-        return {'pressure_strain': result if f is None else result / f}
+        return {'pressure_strain': result if f is None else result}
 
-def compute_buoyancy_term(tke_comp_dict, uiuj='total'): # check this
+def compute_buoyancy_term(gravity_direction, tke_comp_dict, uiuj='total'):
     """
-    G_ij = 1/<rho>(g_i<rho'uj'> + g_j<rho'ui'>)
+    G_ij = (1/<f>) * (g_i <f'u'_j> + g_j <f'u'_i>)
     """
     rho = tke_comp_dict['f']
-    g = tke_comp_dict['grav_dir']
-    f_prime_u_prime = tke_comp_dict[f_prime_u_prime]
+    g = np.array(gravity_direction)
+    f_prime_u = tke_comp_dict['f_prime_u_prime']  # list of 3 arrays (or None entries)
+
+    u1 = tke_comp_dict['U1']
+    zeros = np.zeros_like(u1) if u1 is not None else np.zeros(1)
+    rho_inv = (1.0 / rho) if rho is not None else 1.0
+
+    def _fu(k):
+        return f_prime_u[k] if f_prime_u[k] is not None else zeros
 
     if uiuj == 'total':
-        return (1 / rho) * (np.einsum('ii...---> ...',g[i], f_prime_u_prime[i]))
+        result = rho_inv * sum(g[k] * _fu(k) for k in range(3))
+        return {'buoyancy': result}
     else:
-        i, j = _parse_component(uiuj)
-        return (1 / rho) * ((np.einsum('i,j->ij', g[i], f_prime_u_prime[j])) + (np.einsum('j,i->ji', g[j], f_prime_u_prime[i]))) 
+        ii, jj = _parse_component(uiuj)
+        result = rho_inv * (g[ii] * _fu(jj) + g[jj] * _fu(ii))
+        return {f'buoyancy_{uiuj}': result}
 
-def compute_mhd_term(tke_comp_dict, uiuj = 'total'):
+def compute_mhd_term(mag_field_direction, stuart_number, tke_comp_dict, uiuj='total'):
     """
-    Compute work done by lorentz force 
-    u'F' = Nu'eijkj'B
+    M_ij = N * (ε_jlm B_m <u'_i j'_l> + ε_ilm B_m <u'_j j'_l>)
+
+    Requires uj velocity-current correlations (uj11...uj33) in the XDMF data.
+    Add uj statistics to CHAPSim2 output to enable this term.
     """
-    u_prime = tke_comp_dict('u_prime')
-    N = tke_comp_dict('stuart_number')
-    B = tke_comp_dict('mag_field_dir')
-    j = tke_comp_dict('elec_cur_dens')
-    eijk = tke_comp_dict('levi_civita')
-    
+    N = stuart_number
+    B = np.array(mag_field_direction)
+    U_J = tke_comp_dict['u_j_prime_tensor']  # (3, 3, ...)
+
+    u1 = tke_comp_dict['U1']
+    zeros = np.zeros_like(u1) if u1 is not None else np.zeros(1)
+
+    if N == 0.0 or not np.any(U_J != 0):
+        return {'mhd': zeros} if uiuj == 'total' else {f'mhd_{uiuj}': zeros}
+
+    eijk = np.zeros((3, 3, 3))
+    eijk[0, 1, 2] = eijk[1, 2, 0] = eijk[2, 0, 1] = 1.0
+    eijk[2, 1, 0] = eijk[0, 2, 1] = eijk[1, 0, 2] = -1.0
+
+    # C[a, l] = ε_alm B_m
+    C = np.einsum('alm,m->al', eijk, B)  # (3, 3)
+
     if uiuj == 'total':
-        return 2 * N * np.einsum()
+        # TKE: M = N * Σ_{il} C[i,l] <u'_i j'_l>
+        result = N * np.einsum('il,il...->...', C, U_J)
+        return {'mhd': result}
     else:
-        i, j = _parse_component(uiuj)
-        return N * (u_prime[i] * np.einsum('ijk,j,k->i', eijk, j[j], B) + u_prime[j] * np.einsum('ijk,j,k->i', eijk, j, B)) 
+        ii, jj = _parse_component(uiuj)
+        term1 = np.einsum('l,l...->...', C[jj], U_J[ii])
+        term2 = np.einsum('l,l...->...', C[ii], U_J[jj])
+        return {f'mhd_{uiuj}': N * (term1 + term2)}
 
 # =====================================================================================================================================================
 # Normalisation & Averaging functions
@@ -906,6 +963,12 @@ def analytical_laminar_mhd_prof(case, Re_bulk, Re_tau):
     y = np.linspace(0, 1, 100) * Re_tau
     prof = (((Re_tau * u_tau)/(case * np.tanh(case)))*((1 - np.cosh(case * (1 - y)))/np.cosh(case)) + 1.225)
     return prof
+
+# =====================================================================================================================================================
+# Body Force Analysis
+# =====================================================================================================================================================
+
+
 
 # =====================================================================================================================================================
 # Two-point Correlation Analysis

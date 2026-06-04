@@ -8,33 +8,26 @@ from tqdm import tqdm
 # XDMF READING CONFIGURATION
 # =====================================================================================================================================================
 
-# Set to True to use memory-mapped file reading (can help on HPC/Lustre filesystems)
-USE_MMAP_READ = False
-
 # Set to True to load all variables, False to load only required ones (faster)
 LOAD_ALL_VARS = False
 
-# Variables required for Reynolds stress computation (base names without prefixes)
+# Variables required for computation (base names without prefixes)
 _BASE_REQUIRED_VARS = [
     # Velocities
-    'u1', 'u2', 'u3', 'ux', 'uy', 'uz', 'qx_ccc', 'qy_ccc', 'qz_ccc',
+    'u1', 'u2', 'u3',
     # Reynolds stresses
-    'uu11', 'uu12', 'uu13', 'uu22', 'uu23', 'uu33', 'uu', 'uv', 'vv', 'ww', 'uxux', 'uxuy', 'uyuy', 'uzuz',
+    'uu11', 'uu12', 'uu13', 'uu22', 'uu23', 'uu33',
     # Triple correlations
     'uuu111', 'uuu112', 'uuu113', 'uuu122', 'uuu123', 'uuu133',
     'uuu222', 'uuu223', 'uuu233', 'uuu333',
     # Velocity gradients
-    'du1dx', 'du1dy', 'du1dz', 'du2dx', 'du2dy', 'du2dz', 'du3dx', 'du3dy', 'du3dz',
+    'dudx11', 'dudx12', 'dudx13', 'dudx21', 'dudx22', 'dudx23', 'dudx31', 'dudx32', 'dudx33',
     # Dissipation terms
     'dudu11', 'dudu12', 'dudu13', 'dudu22', 'dudu23', 'dudu33',
-    # TKE gradients
-    'dkdx', 'dkdy', 'dkdz', 'd2kdx2', 'd2kdy2', 'd2kdz2',
     # Pressure terms
-    'pr', 'pru1', 'pru2', 'pru3', 'd_pu1p_dx', 'd_pu2p_dy', 'd_pu3p_dz',
+    'pr', 'pru1', 'pru2', 'pru3',
     'prdu11', 'prdu12', 'prdu13', 'prdu21', 'prdu22', 'prdu23', 'prdu31', 'prdu32', 'prdu33',
-    # Turbulent diffusion
-    'd_uiuiu1_dx', 'd_uiuiu2_dy', 'd_uiuiu3_dz',
-    # Density / volume fraction (variable-property / MHD flows)
+    # Density / volume fraction (variable properties)
     'f',
     'fu1', 'fu2', 'fu3',
     'fuu11', 'fuu12', 'fuu13', 'fuu22', 'fuu23', 'fuu33',
@@ -44,7 +37,14 @@ _BASE_REQUIRED_VARS = [
     'fuuh11', 'fuuh12', 'fuuh13', 'fuuh22', 'fuuh23', 'fuuh33',
     'fh',
     # Temperature
-    'T', 'Temperature', 'temp', 'TT',
+    'T', 'TT', 'Tu1', 'Tu2', 'Tu3',
+    # MHD
+    'e',
+    'j1', 'j2', 'j3',
+    'ej1', 'ej2', 'ej3',
+    'jj11', 'jj12', 'jj13', 'jj22', 'jj23', 'jj33',
+    'eu1', 'eu2', 'eu3',
+    'ju11', 'ju12', 'ju13', 'ju21', 'ju22', 'ju23', 'ju31', 'ju32', 'ju33',
 ]
 
 # Build full set including prefixed versions (tsp_avg_, t_avg_)
@@ -133,8 +133,8 @@ class LiquidLithiumProperties:
         
         h_ref = None
         if ref_temp is not None:
-            h_ref = self.enthalpy(ref_temp)  # find reference enthalpy and convert to J/mol for internal calculation
-            ref_cp = self.heat_capacity_p_molar(ref_temp)
+            h_ref = self.enthalpy(ref_temp)          # kJ/kg
+            ref_cp = self.heat_capacity_p(ref_temp) / 1000  # kJ/(kg·K), matching enthalpy units
         if np.ndim(H) == 0:
             # Scalar case
             h_val = float(H)
@@ -826,7 +826,7 @@ def load_ts_avg_data(data_filepath):
 def get_quantities(thermo_on):
     quantities = ['u1', 'u2', 'u3', 'uu11', 'uu12', 'uu22','uu33','pr']
     if thermo_on:
-        quantities.append('T')
+        quantities.extend(['T', 'Tu2'])
     return quantities
 
 # =====================================================================================================================================================
@@ -1097,8 +1097,6 @@ def read_binary_data_item(data_item, xdmf_dir):
         return None
 
     try:
-        # Calculate expected number of elements to read
-        # This avoids np.fromfile reading until EOF, which can hang on Lustre/HPC filesystems
         itemsize = np.dtype(dtype).itemsize
         if dims:
             count = int(np.prod(dims))
@@ -1107,18 +1105,10 @@ def read_binary_data_item(data_item, xdmf_dir):
             file_size = os.path.getsize(bin_path)
             count = (file_size - seek) // itemsize
 
-        if USE_MMAP_READ:
-            # Memory-mapped reading - can be more reliable on some HPC filesystems
-            with open(bin_path, 'rb') as f:
-                mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-                byte_count = count * itemsize
-                data = np.frombuffer(mm[seek:seek + byte_count], dtype=dtype).copy()
-                mm.close()
-        else:
             # Standard reading with explicit count (fixes Lustre EOF hanging)
-            with open(bin_path, 'rb') as f:
-                f.seek(seek)
-                data = np.fromfile(f, dtype=dtype, count=count)
+        with open(bin_path, 'rb') as f:
+            f.seek(seek)
+            data = np.fromfile(f, dtype=dtype, count=count)
 
         if dims:
             expected_size = int(np.prod(dims))
@@ -1330,16 +1320,10 @@ def _read_binary_from_params(params):
             file_size = os.path.getsize(bin_path)
             count = (file_size - seek) // itemsize
 
-        if USE_MMAP_READ:
-            with open(bin_path, 'rb') as f:
-                mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-                byte_count = count * itemsize
-                data = np.frombuffer(mm[seek:seek + byte_count], dtype=dtype).copy()
-                mm.close()
-        else:
-            with open(bin_path, 'rb') as f:
-                f.seek(seek)
-                data = np.fromfile(f, dtype=dtype, count=count)
+
+        with open(bin_path, 'rb') as f:
+            f.seek(seek)
+            data = np.fromfile(f, dtype=dtype, count=count)
 
         if dims:
             expected_size = int(np.prod(dims))
@@ -1610,6 +1594,13 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
         except Exception as e:
             tqdm.write(f"Error processing {xdmf_file}: {str(e)}")
             continue
+
+    # Warn about any variables that were requested but not found in any loaded file
+    if not load_all_vars and inner_dict:
+        check_vars = required_vars if required_vars is not None else _BASE_REQUIRED_VARS
+        missing = sorted(v for v in check_vars if v not in inner_dict)
+        if missing:
+            tqdm.write(f"WARNING: {len(missing)} requested variable(s) not found in loaded files: {', '.join(missing)}")
 
     return visu_arrays_dic, grid_info
 

@@ -16,8 +16,10 @@ ref_length = [0.05] # m
 ref_bulk_velocity = [0.0900625] # m/s
 wall_heat_flux = [0.0] # W/m^2, positive for heating, negative for cooling
 working_fluid = 'lithium'
+gravity_direction = [0, 0, 0]
 
 mhd_on = True
+mag_field_direction = [0, 0, 0]
 
 average_x_direction = False # Averaging valid for periodic directions, set to False for spatially developing flows
 average_z_direction = True # Averaging valid for periodic directions, set to False for duct flows
@@ -51,6 +53,7 @@ re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual com
 # thermo statistics
 heat_transf_coeff_on = False
 Nusselt_number_on = False
+turb_prandtl_on = False
 
 # Processing options ----------------------------------------------------------------------------------------------------------------------------------
 

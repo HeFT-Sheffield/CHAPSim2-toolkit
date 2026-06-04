@@ -37,7 +37,6 @@ class Config:
     cases: List[str]
     timesteps: List[str]
     thermo_on: bool
-    mhd_on: bool
     forcing: str
     Re: List[float]
     ref_temp: List[float]
@@ -45,6 +44,10 @@ class Config:
     ref_bulk_velocity: List[float]
     wall_heat_flux: List[float]
     working_fluid: str
+    gravity_direction: list[float]
+    mhd_on: bool
+    mag_field_direction: list[float]
+    stuart_number: float
 
     ux_velocity_on: bool
     uy_velocity_on: bool
@@ -52,6 +55,7 @@ class Config:
     temp_on: bool
     heat_transf_coeff_on: bool
     Nusselt_number_on: bool
+    turb_prandtl_on: bool
     coeff_friction_on: bool
     tke_on: bool
     profile_direction: str
@@ -101,7 +105,6 @@ class Config:
             cases=getattr(config_module, 'cases', []),
             timesteps=getattr(config_module, 'timesteps', []),
             thermo_on=getattr(config_module, 'thermo_on', False),
-            mhd_on=getattr(config_module, 'mhd_on', False),
             forcing=getattr(config_module, 'forcing', 'CMF'),
             Re=getattr(config_module, 'Re', [1.0]),
             ref_temp=getattr(config_module, 'ref_temp', [300.0]),
@@ -109,12 +112,17 @@ class Config:
             ref_bulk_velocity=getattr(config_module, 'ref_bulk_velocity', [1.0]),
             wall_heat_flux=getattr(config_module, 'wall_heat_flux', [0.0]),
             working_fluid=getattr(config_module, 'working_fluid', 'lithium'),
+            gravity_direction=getattr(config_module, 'gravity_direction', [0.0, -1.0, 0.0]),
+            mhd_on=getattr(config_module, 'mhd_on', False),
+            mag_field_direction=getattr(config_module, 'mag_field_direction', [0.0, 1.0, 0.0]),
+            stuart_number=getattr(config_module, 'stuart_number', 0.0),
             ux_velocity_on=getattr(config_module, 'ux_velocity_on', False),
             uy_velocity_on=getattr(config_module, 'uy_velocity_on', False),
             uz_velocity_on=getattr(config_module, 'uz_velocity_on', False),
             temp_on=getattr(config_module, 'temp_on', False),
             heat_transf_coeff_on=getattr(config_module, 'heat_transf_coeff_on', False),
             Nusselt_number_on=getattr(config_module, 'Nusselt_number_on', False),
+            turb_prandtl_on=getattr(config_module, 'turb_prandtl_on', False),
             coeff_friction_on=getattr(config_module, 'coeff_friction_on', False),
             tke_on=getattr(config_module, 'tke_on', False),
             u_prime_sq_on=getattr(config_module, 'u_prime_sq_on', False),
@@ -233,6 +241,10 @@ class PlotConfig:
                 'viscous_diffusion': '#ff7f0e',
                 'pressure_transport': '#9467bd',
                 'turbulent_diffusion': '#17becf',
+                'buoyancy': '#e377c2',
+                'mhd': '#8c564b',
+                'pressure_strain': '#bcbd22',
+                'turbulent_convection': '#7f7f7f',
             }
 
         if self.visible_palette is None:
@@ -381,6 +393,8 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
         required.add('u1')
     if config.heat_transf_coeff_on or config.Nusselt_number_on:
         required.update({'T', 'fuh1', 'fu1'})
+    if config.turb_prandtl_on:
+        required.update({'u1', 'u2', 'uu12', 'T', 'Tu2'})
 
     # Ensure downstream normalization/flow-info/coordinate logic can run.
     if required:
@@ -699,92 +713,7 @@ class ReferenceData:
             print(f"NK mhd reference is disabled or required data is missing: {e}")
 
 # =====================================================================================================================================================
-# REYNOLDS STRESS CLASSES
-# =====================================================================================================================================================
-
-class ReStresses(ABC):
-    """Abstract base class for Reynolds stress statistics"""
-
-    def __init__(self, name: str, label: str, required_quantities: List[str]):
-        self.name = name
-        self.label = label
-        self.required_quantities = required_quantities
-        self.raw_results: Dict[Tuple[str, str], np.ndarray] = {}
-        self.processed_results: Dict[Tuple[str, str], np.ndarray] = {}
-
-    @abstractmethod
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        """Compute the statistic from required data"""
-        pass
-
-    def compute_for_case(self, case: str, timestep: str, data_loader: TurbulenceTextData) -> bool:
-        """Compute statistic for a specific case and timestep"""
-        # Gather required data
-        data_dict = {}
-        for quantity in self.required_quantities:
-            if not data_loader.has(case, quantity, timestep):
-                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
-                return False
-            data_dict[quantity] = data_loader.get(case, quantity, timestep)
-
-        # Compute statistic
-        result = self.compute(data_dict)
-        self.raw_results[(case, timestep)] = result
-        return True
-
-    def get_half_domain(self, values: np.ndarray) -> np.ndarray:
-        """Get first half of domain"""
-        return values[:(len(values)//2)]
-
-
-
-class ReynoldsStressuu11(ReStresses):
-    """Reynolds stress u'u'"""
-
-    def __init__(self):
-        super().__init__('u_prime_sq', "<u'u'>", ['u1', 'uu11'])
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        return op.compute_normal_stress(data_dict['u1'], data_dict['uu11'])
-
-class ReynoldsStressuu12(ReStresses):
-    """Reynolds stress u'v'"""
-
-    def __init__(self):
-        super().__init__('u_prime_v_prime', "<u'v'>", ['u1', 'u2', 'uu12'])
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        return op.compute_shear_stress(data_dict['u1'], data_dict['u2'], data_dict['uu12'])
-
-class ReynoldsStressuu22(ReStresses):
-    """Reynolds stress v'v'"""
-
-    def __init__(self):
-        super().__init__('v_prime_sq', "<v'v'>", ['u2', 'uu22'])
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        return op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
-    
-class ReynoldsStressuu23(ReStresses):
-    """Reynolds Stress v'w'"""
-
-    def __init__(self):
-        super().__init__('v_prime_w_prime', "<v'w'>", ['u2','u3', 'uu23'])
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        return op.compute_shear_stress(data_dict['u2'], data_dict['u3'], data_dict['uu23'])
-
-class ReynoldsStressuu33(ReStresses):
-    """Reynolds stress w'w'"""
-
-    def __init__(self):
-        super().__init__('w_prime_sq', "<w'w'>", ['u3', 'uu33'])
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        return op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
-
-# =====================================================================================================================================================
-# PROFILE CLASSES
+# FLOW PROFILE CLASSES
 # =====================================================================================================================================================
 
 class Profiles(ABC):
@@ -851,36 +780,6 @@ class SpanwiseVelocity(Profiles):
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         return op.read_profile(data_dict['u3'])
 
-class Temperature(Profiles):
-    """Temperature profile"""
-
-    def __init__(self, norm_temp_by_ref_temp: bool, ref_temps: List[float], cases: List[str]):
-        super().__init__('temperature', 'Temperature', ['T'])
-        self.norm_temp_by_ref_temp = norm_temp_by_ref_temp
-        self.ref_temps = ref_temps
-        self.cases = cases
-
-    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
-        """Compute temperature profile with per-case ref_temp."""
-        data_dict = {}
-        for quantity in self.required_quantities:
-            if not data_loader.has(case, quantity, timestep):
-                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
-                return False
-            data_dict[quantity] = data_loader.get(case, quantity, timestep)
-
-        ref_temp = float(self.ref_temps[self.cases.index(case)]) if len(self.ref_temps) > 1 else float(self.ref_temps[0])
-        result = op.dimensionalize_temperature(op.read_profile(data_dict['T']), ref_temp, self.norm_temp_by_ref_temp)
-
-        self.raw_results[(case, timestep)] = result
-        return True
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        return op.dimensionalize_temperature(
-            op.read_profile(data_dict['T']),
-            float(self.ref_temps[0]),
-            self.norm_temp_by_ref_temp,
-        )
 
 class FrictionCoefficient(Profiles):
     """Wall friction coefficient profile (x-direction only)"""
@@ -915,6 +814,54 @@ class FrictionCoefficient(Profiles):
             u1_data = u1_data.mean(axis=2)
         tau_w = op.compute_wall_shear_stress_from_velocity(u1_data, ref_Re, y_coords=y_coords)
         return op.compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0)
+
+
+class TurbulentKineticEnergy(Profiles):
+    """Turbulent Kinetic Energy (TKE)"""
+
+    def __init__(self):
+        super().__init__('TKE', 'Turbulent Kinetic Energy', ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        u_prime_sq = op.compute_normal_stress(data_dict['u1'], data_dict['uu11'])
+        v_prime_sq = op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
+        w_prime_sq = op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
+        return op.compute_tke(u_prime_sq, v_prime_sq, w_prime_sq)
+    
+# =====================================================================================================================================================
+# THERMO PROFILE CLASSES
+# =====================================================================================================================================================
+
+class Temperature(Profiles):
+    """Temperature profile"""
+
+    def __init__(self, norm_temp_by_ref_temp: bool, ref_temps: List[float], cases: List[str]):
+        super().__init__('temperature', 'Temperature', ['T'])
+        self.norm_temp_by_ref_temp = norm_temp_by_ref_temp
+        self.ref_temps = ref_temps
+        self.cases = cases
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        """Compute temperature profile with per-case ref_temp."""
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        ref_temp = float(self.ref_temps[self.cases.index(case)]) if len(self.ref_temps) > 1 else float(self.ref_temps[0])
+        result = op.dimensionalize_temperature(op.read_profile(data_dict['T']), ref_temp, self.norm_temp_by_ref_temp)
+
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.dimensionalize_temperature(
+            op.read_profile(data_dict['T']),
+            float(self.ref_temps[0]),
+            self.norm_temp_by_ref_temp,
+        )
 
 
 class HeatTransferCoefficient(Profiles):
@@ -1020,17 +967,122 @@ class NusseltNumber(HeatTransferCoefficient):
         self.raw_results[(case, timestep)] = nu_profile
         return True
 
-class TurbulentKineticEnergy(Profiles):
-    """Turbulent Kinetic Energy (TKE)"""
+class TurbulentPrandtlNumber(Profiles):
+    """Turbulent Prandtl number: Pr_t = (nu_t / alpha_t)"""
 
     def __init__(self):
-        super().__init__('TKE', 'Turbulent Kinetic Energy', ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'])
+        super().__init__('turb_prandtl', 'Turbulent Prandtl Number', ['u1', 'u2', 'uu12', 'T', 'Tu2'])
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+
+        data_dict = {q: data_loader.get(case, q, timestep) for q in self.required_quantities}
+        y_coords = getattr(data_loader, 'y_coords', None)
+        if y_coords is None:
+            u1 = data_dict['u1']
+            if u1.ndim == 2 and u1.shape[1] == 3:
+                y_coords = u1[:, 1]
+        result = self.compute(data_dict, y_coords=y_coords)
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray], y_coords: Optional[np.ndarray] = None) -> np.ndarray:
+        return op.compute_turb_Prandtl_number(
+            data_dict['u1'], data_dict['u2'], data_dict['uu12'],
+            data_dict['T'], data_dict['Tu2'], y_coords
+        )
+
+
+# =====================================================================================================================================================
+# REYNOLDS STRESS CLASSES
+# =====================================================================================================================================================
+
+class ReStresses(ABC):
+    """Abstract base class for Reynolds stress statistics"""
+
+    def __init__(self, name: str, label: str, required_quantities: List[str]):
+        self.name = name
+        self.label = label
+        self.required_quantities = required_quantities
+        self.raw_results: Dict[Tuple[str, str], np.ndarray] = {}
+        self.processed_results: Dict[Tuple[str, str], np.ndarray] = {}
+
+    @abstractmethod
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        """Compute the statistic from required data"""
+        pass
+
+    def compute_for_case(self, case: str, timestep: str, data_loader: TurbulenceTextData) -> bool:
+        """Compute statistic for a specific case and timestep"""
+        # Gather required data
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        # Compute statistic
+        result = self.compute(data_dict)
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def get_half_domain(self, values: np.ndarray) -> np.ndarray:
+        """Get first half of domain"""
+        return values[:(len(values)//2)]
+
+
+class ReynoldsStressuu11(ReStresses):
+    """Reynolds stress u'u'"""
+
+    def __init__(self):
+        super().__init__('u_prime_sq', "<u'u'>", ['u1', 'uu11'])
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        u_prime_sq = op.compute_normal_stress(data_dict['u1'], data_dict['uu11'])
-        v_prime_sq = op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
-        w_prime_sq = op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
-        return op.compute_tke(u_prime_sq, v_prime_sq, w_prime_sq)
+        return op.compute_normal_stress(data_dict['u1'], data_dict['uu11'])
+
+
+class ReynoldsStressuu12(ReStresses):
+    """Reynolds stress u'v'"""
+
+    def __init__(self):
+        super().__init__('u_prime_v_prime', "<u'v'>", ['u1', 'u2', 'uu12'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.compute_shear_stress(data_dict['u1'], data_dict['u2'], data_dict['uu12'])
+
+
+class ReynoldsStressuu22(ReStresses):
+    """Reynolds stress v'v'"""
+
+    def __init__(self):
+        super().__init__('v_prime_sq', "<v'v'>", ['u2', 'uu22'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
+    
+
+class ReynoldsStressuu23(ReStresses):
+    """Reynolds Stress v'w'"""
+
+    def __init__(self):
+        super().__init__('v_prime_w_prime', "<v'w'>", ['u2','u3', 'uu23'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.compute_shear_stress(data_dict['u2'], data_dict['u3'], data_dict['uu23'])
+
+
+class ReynoldsStressuu33(ReStresses):
+    """Reynolds stress w'w'"""
+
+    def __init__(self):
+        super().__init__('w_prime_sq', "<w'w'>", ['u3', 'uu33'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
 
 # =====================================================================================================================================================
 # REYNOLDS STRESS BUDGET CLASSES
@@ -1101,6 +1153,10 @@ class BudgetComputer:
                 (flag, term_name, label)
                 for flag, (term_name, label) in self.TERM_REGISTRY.items()
             ]
+            if config.thermo_on:
+                self.enabled_terms.append(('buoyancy_on', 'buoyancy', 'Buoyancy'))
+            if config.mhd_on:
+                self.enabled_terms.append(('mhd_on', 'mhd', 'MHD (Lorentz)'))
 
         # Storage: {term_name: {(case, timestep): array}}
         self.raw_results: Dict[str, Dict[Tuple[str, str], np.ndarray]] = {
@@ -1140,6 +1196,8 @@ class BudgetComputer:
             'pressure_transport':  lambda d: op.compute_pressure_transport(d, self.uiuj),
             'pressure_strain':     lambda d: op.compute_pressure_strain(d, self.uiuj),
             'turbulent_convection':lambda d: op.compute_turbulent_convection(d, self.uiuj),
+            'buoyancy':            lambda d: op.compute_buoyancy_term(self.config.gravity_direction, d, self.uiuj),
+            'mhd':                 lambda d: op.compute_mhd_term(self.config.mag_field_direction, self.config.stuart_number, d, self.uiuj),
         }
 
         for _flag, term_name, _label in self.enabled_terms:
@@ -1177,48 +1235,6 @@ class BudgetTerm:
     def get_half_domain(self, values: np.ndarray) -> np.ndarray:
         return values[:(len(values)//2)]
 
-
-# Placeholder classes for future implementation
-class Buoyancy(Budget):
-    """
-    TKE Buoyancy term: B = -β gᵢ ⟨u'ᵢT'⟩
-
-    Represents the production/destruction of TKE due to buoyancy effects.
-    For vertical direction (gravity in y): B = -β g ⟨v'T'⟩
-
-    TODO: Implement when thermal data is available.
-    """
-
-    def __init__(self):
-        super().__init__(
-            'buoyancy',
-            'Buoyancy',
-            ['u2', 'T', 'u2T']  # Placeholder - actual requirements TBD
-        )
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        raise NotImplementedError("Buoyancy term not yet implemented")
-
-
-class MHD(Budget):
-    """
-    TKE MHD (Lorentz force) term: M = ⟨u'ᵢj'ᵢ⟩ × B / ρ
-
-    Represents the interaction between velocity fluctuations and
-    induced current fluctuations in an MHD flow.
-
-    TODO: Implement when MHD data is available.
-    """
-
-    def __init__(self):
-        super().__init__(
-            'mhd',
-            'MHD (Lorentz)',
-            ['u1', 'u2', 'u3', 'j1', 'j2', 'j3']  # Placeholder - actual requirements TBD
-        )
-
-    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        raise NotImplementedError("MHD term not yet implemented")
 
 
 # =====================================================================================================================================================
@@ -1283,6 +1299,9 @@ class TurbulenceStatsPipeline:
                 self.config.working_fluid,
             ))
 
+        if self.config.turb_prandtl_on:
+            self.statistics.append(TurbulentPrandtlNumber())
+
         if self.config.coeff_friction_on:
             self.statistics.append(FrictionCoefficient(self.config.cases, self.config.Re))
 
@@ -1344,7 +1363,7 @@ class TurbulenceStatsPipeline:
                     ref_Re = op.get_ref_Re(case, self.config.cases, self.config.Re)
 
                     # Normalize (element-wise — works for any ndim)
-                    if self.config.norm_by_u_tau_sq and stat.name not in ('temperature', 'coeff_friction', 'heat_transfer_coeff', 'nusselt_number'):
+                    if self.config.norm_by_u_tau_sq and stat.name not in ('temperature', 'coeff_friction', 'heat_transfer_coeff', 'nusselt_number', 'turb_prandtl'):
                         normed = op.norm_turb_stat_wrt_u_tau_sq(ux_data, values, ref_Re, y_coords=y_coords)
                     else:
                         normed = values
@@ -1479,6 +1498,7 @@ class TurbulencePlotter:
             'temperature': '$T$',
             'heat_transfer_coeff': '$h$ (W/(m^2K))',
             'nusselt_number': '$Nu$',
+            'turb_prandtl': '$Pr_t$',
             'TKE': '$k/U_{bulk}^2$',
             'u_prime_sq': "$\\langle u'u' \\rangle/U_{bulk}^2$",
             'u_prime_v_prime': "$\\langle u'v' \\rangle/U_{bulk}^2$",
@@ -2110,17 +2130,23 @@ class TurbulencePlotter:
     def _get_color(self, key: str, stat_name: Optional[str] = None) -> str:
         """Get a visible colour for a plotted series.
 
-        Colours are assigned sequentially from the visible palette per figure
-        so lines are distinct within a plot before any colour reuse.
+        Budget terms use fixed colours from budget_colors so they are always
+        consistent. All other series are assigned sequentially from the visible
+        palette so lines are distinct within a plot before any colour reuse.
         """
         if key in self._series_color_map:
             return self._series_color_map[key]
 
-        palette = self.plot_config.visible_palette
-        index = self._next_color_index % len(palette)
-        color = palette[index]
+        budget_colors = self.plot_config.budget_colors
+        if stat_name and stat_name in budget_colors:
+            color = budget_colors[stat_name]
+        else:
+            palette = self.plot_config.visible_palette
+            index = self._next_color_index % len(palette)
+            color = palette[index]
+            self._next_color_index += 1
+
         self._series_color_map[key] = color
-        self._next_color_index += 1
         return color
 
     def save_figure(self, fig, suffix: str = '') -> None:
