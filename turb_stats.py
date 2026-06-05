@@ -1184,8 +1184,10 @@ class BudgetComputer:
             average_z=self.average_z, average_x=self.average_x
         )
 
-        # Get the correct Re for this case
+        # Get the correct Re, reference velocity and length for this case
         Re = float(op.get_ref_Re(case, self.config.cases, self.config.Re))
+        u_ref = float(op.get_ref_Re(case, self.config.cases, self.config.ref_bulk_velocity))
+        l_ref = float(op.get_ref_Re(case, self.config.cases, self.config.ref_length))
 
         # Extract each enabled term
         _compute_fns = {
@@ -1196,7 +1198,7 @@ class BudgetComputer:
             'pressure_transport':  lambda d: op.compute_pressure_transport(d, self.uiuj),
             'pressure_strain':     lambda d: op.compute_pressure_strain(d, self.uiuj),
             'turbulent_convection':lambda d: op.compute_turbulent_convection(d, self.uiuj),
-            'buoyancy':            lambda d: op.compute_buoyancy_term(self.config.gravity_direction, d, self.uiuj),
+            'buoyancy':            lambda d: op.compute_buoyancy_term(self.config.gravity_direction, u_ref, l_ref, d, self.uiuj),
             'mhd':                 lambda d: op.compute_mhd_term(self.config.mag_field_direction, self.config.stuart_number, d, self.uiuj),
         }
 
@@ -2026,12 +2028,12 @@ class TurbulencePlotter:
             plot_kwargs['markersize'] = 4
             plot_kwargs['markevery'] = markevery
 
+        ax.plot(x, y, **plot_kwargs)
+        self._apply_xscale(ax)
+
+    def _apply_xscale(self, ax) -> None:
         if self.config.log_y_scale:
-            ax.semilogx(x, y, **plot_kwargs)
-        elif self.config.linear_y_scale:
-            ax.plot(x, y, **plot_kwargs)
-        else:
-            print('Plotting input incorrectly defined')
+            ax.set_xscale('log')
 
     def _get_markevery(self, n_points: int):
         """Return marker spacing that appears visually uniform on the plotted curve."""
@@ -2063,41 +2065,28 @@ class TurbulencePlotter:
         # Noguchi & Kasagi reference
         if self.config.mhd_NK_ref_on:
             if case == 'Ha_4' and reference_data.NK_H4_stats and stat_name in reference_data.NK_H4_stats:
-                if self.config.log_y_scale:
-                    ax.semilogx(reference_data.NK_ref_y_H4,
-                              reference_data.NK_H4_stats[stat_name],
-                              linestyle='', marker='o',
-                              label='Ha = 4, Noguchi & Kasagi',
-                              color=self.plot_config.colors_1[stat_name], markevery=2)
-                else:
-                    ax.plot(reference_data.NK_ref_y_H4,
-                          reference_data.NK_H4_stats[stat_name],
-                          linestyle='', marker='o',
-                          label='Ha = 4, Noguchi & Kasagi',
-                          color=self.plot_config.colors_1[stat_name], markevery=2)
+                ax.plot(reference_data.NK_ref_y_H4,
+                        reference_data.NK_H4_stats[stat_name],
+                        linestyle='', marker='o',
+                        label='Ha = 4, Noguchi & Kasagi',
+                        color=self.plot_config.colors_1[stat_name], markevery=2)
 
             elif case == 'Ha_6' and reference_data.NK_H6_stats and stat_name in reference_data.NK_H6_stats:
-                if self.config.log_y_scale:
-                    ax.semilogx(reference_data.NK_ref_y_H6,
-                              reference_data.NK_H6_stats[stat_name],
-                              linestyle='', marker='o',
-                              label='Ha = 6, Noguchi & Kasagi',
-                              color=self.plot_config.colors_2[stat_name], markevery=2)
-                else:
-                    ax.plot(reference_data.NK_ref_y_H6,
-                          reference_data.NK_H6_stats[stat_name],
-                          linestyle='', marker='o',
-                          label='Ha = 6, Noguchi & Kasagi',
-                          color=self.plot_config.colors_2[stat_name], markevery=2)
+                ax.plot(reference_data.NK_ref_y_H6,
+                        reference_data.NK_H6_stats[stat_name],
+                        linestyle='', marker='o',
+                        label='Ha = 6, Noguchi & Kasagi',
+                        color=self.plot_config.colors_2[stat_name], markevery=2)
 
     def _plot_log_reference_lines(self, ax, y_plus: np.ndarray) -> None:
         """Plot reference lines for log-scale velocity plots"""
         if self.config.log_y_scale:
-            ax.semilogx(y_plus[:15], y_plus[:15], '--', linewidth=1,
-                       label='$u^+ = y^+$', color='black', alpha=0.5)
+            ax.plot(y_plus[:15], y_plus[:15], '--', linewidth=1,
+                    label='$u^+ = y^+$', color='black', alpha=0.5)
             u_plus_ref = 2.5 * np.log(y_plus) + 5.5
             ax.plot(y_plus, u_plus_ref, '--', linewidth=1,
-                   label='$u^+ = 2.5ln(y^+) + 5.5$', color='black', alpha=0.5)
+                    label='$u^+ = 2.5ln(y^+) + 5.5$', color='black', alpha=0.5)
+            self._apply_xscale(ax)
 
     def _get_y_plus(self, case: str, timestep: str) -> Optional[np.ndarray]:
         """Calculate y or y+ coordinates for a case"""

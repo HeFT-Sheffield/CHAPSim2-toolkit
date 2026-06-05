@@ -411,7 +411,7 @@ class TurbStatsTab(ttk.Frame):
         s = sec('Plotting')
         chk(s, 'Half channel', bv('half_channel_plot', False))
         chk(s, 'Linear y scale', bv('linear_y_scale', True))
-        chk(s, 'Log y scale', bv('log_y_scale', False))
+        chk(s, 'Log x scale (semilog)', bv('log_y_scale', False))
         chk(s, 'Multi-plot', bv('multi_plot', True))
         chk(s, 'Save figures', bv('save_fig', True))
         chk(s, 'Save to folder path', bv('save_to_path', True))

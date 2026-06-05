@@ -586,6 +586,13 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
         [_or_zero(press_grad[i][j]) for j in range(3)] for i in range(3)
     ])
 
+    # # ------------------------------------------------------------------
+    # # Pressure work tensor: d⟨p⟩/dx_i * ⟨u'ᵢ⟩ + d⟨p⟩/dx_j * ⟨u'ⱼ⟩
+    # # ------------------------------------------------------------------
+    # dp_dx = [grad_fns[k](pr) if pr is not None else None for k in range(3)]
+    # _pw = [_or_zero(dp_dx[k] * u_prime_rms[k]) if dp_dx[k] is not None and u_fields[k] is not None else np.zeros_like(u1) for k in range(3)]
+    # pressure_work_tensor = np.array([[_pw[i] + _pw[j] for j in range(3)] for i in range(3)])
+
     # ------------------------------------------------------------------
     # Pressure-strain correlation tensor  ⟨p' ∂u'ᵢ/∂xⱼ⟩
     #   = ⟨p ∂uᵢ/∂xⱼ⟩ − ⟨p⟩ ∂⟨uᵢ⟩/∂xⱼ
@@ -745,6 +752,7 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
         'mean_conv_tensor_x3': mean_conv_tensor_x3,
         'f_prime_u_prime': f_prime_u_prime,
         'u_j_prime_tensor': u_j_prime_tensor,
+        # 'pressure_work_tensor': pressure_work_tensor,
     }
 
 def _parse_component(uiuj_str):
@@ -821,11 +829,12 @@ def compute_viscous_diffusion(Re, turb_comp_dict, uiuj='total'):
 def compute_pressure_transport(tke_comp_dict, uiuj='total'): # think this needs 1 / rho
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
     P = tke_comp_dict['press_velocity_fluc_grad_tensor']
+    f = tke_comp_dict['f']
     if uiuj == 'total':
-        return {'pressure_transport': -np.trace(P)}
+        return {'pressure_transport': -np.trace(P) if f is None else -np.trace(P) / f}
     else:
         i, j = _parse_component(uiuj)
-        return {'pressure_transport': -(P[i, j] + P[j, i])}
+        return {'pressure_transport': -(P[i, j] + P[j, i]) if f is None else -(P[i, j] + P[j, i]) / f}
 
 def compute_pressure_strain(tke_comp_dict, uiuj='total'):
     """
@@ -843,37 +852,56 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total'):
     else:
         i, j = _parse_component(uiuj)
         result = S[i, j] + S[j, i]
-        return {'pressure_strain': result if f is None else result}
+        return {'pressure_strain': result if f is None else result / f}
 
-def compute_buoyancy_term(gravity_direction, tke_comp_dict, uiuj='total'):
+# def compute_pressure_work(tke_comp_dict, uiuj='total'):
+#     """
+#     Pressure work: (1/<f>) * (d<p>/dx_i * u'_i + d<p>/dx_j * u'_j)
+
+#     W_ij = (1/<f>) * (∂⟨p⟩/∂x_i * ⟨u'_i⟩ + ∂⟨p⟩/∂x_j * ⟨u'_j⟩)
+#     Total TKE = (1/<f>) * Σ_k ∂⟨p⟩/∂x_k * ⟨u'_k⟩
+#     """
+#     f = tke_comp_dict['f']
+#     PW = tke_comp_dict['pressure_work_tensor']
+#     rho_inv = (1.0 / f) if f is not None else 1.0
+#     if uiuj == 'total':
+#         result = rho_inv * 0.5 * np.einsum('ii...->...', PW)
+#         return {'pressure_work': result}
+#     else:
+#         i, j = _parse_component(uiuj)
+#         result = rho_inv * PW[i, j]
+#         return {f'pressure_work_{uiuj}': result}
+
+def compute_buoyancy_term(gravity_direction, u_ref, l_ref, tke_comp_dict, uiuj='total'):
     """
     G_ij = (1/<f>) * (g_i <f'u'_j> + g_j <f'u'_i>)
     """
+
+    G_CONST = 9.81
     rho = tke_comp_dict['f']
     g = np.array(gravity_direction)
     f_prime_u = tke_comp_dict['f_prime_u_prime']  # list of 3 arrays (or None entries)
-
     u1 = tke_comp_dict['U1']
     zeros = np.zeros_like(u1) if u1 is not None else np.zeros(1)
     rho_inv = (1.0 / rho) if rho is not None else 1.0
+    Fr = float(u_ref) / np.sqrt(G_CONST * float(l_ref)) if (u_ref is not None and l_ref is not None) else 1 / np.sqrt(G_CONST)
+    Fr_sq_inv = 1.0 / Fr ** 2
 
     def _fu(k):
         return f_prime_u[k] if f_prime_u[k] is not None else zeros
 
     if uiuj == 'total':
-        result = rho_inv * sum(g[k] * _fu(k) for k in range(3))
+        result = rho_inv * Fr_sq_inv * sum(g[k] * _fu(k) for k in range(3))
         return {'buoyancy': result}
     else:
         ii, jj = _parse_component(uiuj)
-        result = rho_inv * (g[ii] * _fu(jj) + g[jj] * _fu(ii))
+        result = rho_inv * Fr_sq_inv * (g[ii] * _fu(jj) + g[jj] * _fu(ii))
         return {f'buoyancy_{uiuj}': result}
 
 def compute_mhd_term(mag_field_direction, stuart_number, tke_comp_dict, uiuj='total'):
     """
     M_ij = N * (ε_jlm B_m <u'_i j'_l> + ε_ilm B_m <u'_j j'_l>)
-
-    Requires uj velocity-current correlations (uj11...uj33) in the XDMF data.
-    Add uj statistics to CHAPSim2 output to enable this term.
+    where ε is the levi civita tensor.
     """
     N = stuart_number
     B = np.array(mag_field_direction)
