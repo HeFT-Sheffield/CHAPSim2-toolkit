@@ -9,13 +9,13 @@ conda: Navigate to base directory and run 'conda env create -f environment.yml' 
 
 ## Scripts:
 
-**gui.py**: This launches a user interface for turbulence statistics, slice visualisation and monitoring points, run 'python gui.py'. This will likely not work on HPCs, use interactive script input instead.
+**gui.py**: This launches a user interface for turbulence statistics, slice visualisation and monitoring points, run 'python gui.py'. This will likely not work on HPCs, use interactive script input instead (run each script individually).
 
-**quick_turb_stats.py**: Single case post-processing script, currently outputs a figure for velocity/TKE/Temperature and a figure for Reynolds stresses. Ideal for use on HPCs with only numpy, matplotlib and tqdm dependencies. Recommended to be run on a serial/ data analysis or interactive node as bandwidth is typically throttled on login nodes. Interactive input.
+**quick_turb_stats.py**: Single case post-processing script, outputs a figure for velocity/TKE/Temperature and a figure for Reynolds stresses. Ideal for use on HPCs with only numpy, matplotlib and tqdm dependencies. Recommended to be run on a serial/ data analysis or interactive node as bandwidth is typically throttled on login nodes. Interactive input.
 
 **slice.py**: 2D visualisation of any output parameter with matplotlib plotting options. Also recommended to be run on a serial/ data analysis or interactive node as bandwidth is typically throttled on login nodes. Interactive input.
 
-**turb_stats.py**: Main post-processing script to provide velocity, temperature, Reynolds stress profiles and Reynolds stress budget terms from CHAPSim2 text file or xdmf output. Input parameters, cases for comparison, plotting options etc. are specified on config.py file. Plots saved in turb_stats_plots/ and to file path.
+**turb_stats.py**: Main post-processing script to provide velocity, temperature, Reynolds stress profiles, Reynolds stress budget terms and heat transfer statistics such as turbulent Prantl number and Nusselt number from CHAPSim2 text file or xdmf output. Input parameters, cases for comparison, plotting options etc. are specified on config.py file for interactive input. Plots saved in turb_stats_plots/ and to file path.
 
 **monitor_points.py**: Plotting for bulk and point monitors, includes functionality to crop diverged data. Run the script in the directory containing monitor point files or specify a path to files. Interactive Input.
 

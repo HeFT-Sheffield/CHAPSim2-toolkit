@@ -4,26 +4,30 @@
 
 folder_path = '' # format: folder_path/case/1_data/quantity_timestep.dat
 input_format = 'visu' # 'text' (.dat) or 'visu' (.xdmf)
-cases = ['Tests'] # case names must match folder names exactly
-timesteps = ['680000']
-average_over_timesteps = False
+xdmf_data_type = 'tsp_avg' # 't_avg' (3D) or 'tsp_avg' (2D).
 slice_label = '' # 2D slice label (e.g. 'yi8' for xz slice at y index 8), leave blank for full 3D data
-forcing = 'CMF' # 'CMF' or 'CPG'
+cases = ['Tests'] # case names must match folder names exactly. Add multiple in a list.
+timesteps = ['680000'] # Add multiple in a list
+average_over_timesteps = False # calculates mean over multiple timestep files for each case
+average_x_direction = False # Averaging valid for periodic directions, set to False for spatially developing flows
+average_z_direction = True # Averaging valid for periodic directions, set to False for duct flows
+
+forcing = 'CMF' # 'CMF' or 'CPG', constant mass flux or pressure gradient.
 Re = [5000] # indexing matches 'cases' if different Re used for different cases. Use bulk reference value for CPG.
 
+# Thermo/ Variable Properties
 thermo_on = True # Below reference values are used for thermo statistics, not necessary for isothermal flows
 ref_temp = [570] # Kelvin
 ref_length = [0.05] # m
 ref_bulk_velocity = [0.0900625] # m/s
 wall_heat_flux = [0.0] # W/m^2, positive for heating, negative for cooling
-working_fluid = 'lithium'
-gravity_direction = [0, 0, 0]
+working_fluid = 'lithium' # Only liquid metals available.
+gravity_direction = [0, 0, 0] # [x, y, z]
 
+# Magnetohydrodynamics
 mhd_on = True
-mag_field_direction = [0, 0, 0]
-
-average_x_direction = False # Averaging valid for periodic directions, set to False for spatially developing flows
-average_z_direction = True # Averaging valid for periodic directions, set to False for duct flows
+mag_field_direction = [0, 0, 0] # [x, y, z]
+stuart_number = 0.0
 
 # Output ==============================================================================================================================================
 
@@ -52,8 +56,8 @@ re_stress_budget_on = False
 re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components
 
 # thermo statistics
-heat_transf_coeff_on = False
-Nusselt_number_on = False
+heat_transf_coeff_on = False # x profile only
+Nusselt_number_on = False # x profile only
 turb_prandtl_on = False
 
 # Processing options ----------------------------------------------------------------------------------------------------------------------------------
