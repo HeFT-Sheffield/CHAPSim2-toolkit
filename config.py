@@ -6,6 +6,7 @@ folder_path = '' # format: folder_path/case/1_data/quantity_timestep.dat
 input_format = 'visu' # 'text' (.dat) or 'visu' (.xdmf)
 cases = ['Tests'] # case names must match folder names exactly
 timesteps = ['680000']
+average_over_timesteps = False
 slice_label = '' # 2D slice label (e.g. 'yi8' for xz slice at y index 8), leave blank for full 3D data
 forcing = 'CMF' # 'CMF' or 'CPG'
 Re = [5000] # indexing matches 'cases' if different Re used for different cases. Use bulk reference value for CPG.

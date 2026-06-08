@@ -36,6 +36,7 @@ class Config:
     input_format: str
     cases: List[str]
     timesteps: List[str]
+    average_over_timesteps: bool
     thermo_on: bool
     forcing: str
     Re: List[float]
@@ -104,6 +105,7 @@ class Config:
             input_format=getattr(config_module, 'input_format', 'dat'),
             cases=getattr(config_module, 'cases', []),
             timesteps=getattr(config_module, 'timesteps', []),
+            average_over_timesteps=getattr(config_module, 'average_over_timesteps', False),
             thermo_on=getattr(config_module, 'thermo_on', False),
             forcing=getattr(config_module, 'forcing', 'CMF'),
             Re=getattr(config_module, 'Re', [1.0]),
@@ -299,11 +301,6 @@ def create_data_loader(config: Config, data_types: List[str] = None):
     Args:
         config: Configuration object
         data_types: List of XDMF data types to load. Only used for XDMF format.
-                    Valid types: 'inst', 't_avg', or specific combinations
-                    like 't_avg_flow', 't_avg_thermo', etc.
-                    Note: tsp_avg data is only available as .txt files in 1_data/
-                    and is NOT available as XDMF.  Use 't_avg' for Reynolds stress
-                    data (uu11, uu12, etc.) when using the XDMF loader.
 
     Returns:
         Data loader instance (TurbulenceTextData or TurbulenceXDMFData)
@@ -325,13 +322,12 @@ def create_data_loader(config: Config, data_types: List[str] = None):
         else:
             data_types = list(data_types)
 
-        # Safety guard: Re-stress and budget terms require t_avg files.
-        # Enforce this even when caller passes custom data_types.
         if re_stress_enabled or re_stress_budget_enabled:
-            if not any(dtype == 't_avg' or dtype.startswith('t_avg_') for dtype in data_types):
+            if not any(dtype == 't_avg' or dtype == ('tsp_avg') for dtype in data_types):
                 data_types.append('t_avg')
                 print("Added 't_avg' to data_types because enabled stats require time-averaged fields.")
         print(f"Using XDMF data loader with data_types={data_types}...")
+        
         return TurbulenceXDMFData(
             config.folder_path,
             config.cases,
@@ -341,7 +337,8 @@ def create_data_loader(config: Config, data_types: List[str] = None):
             average_z=config.average_z_direction,
             average_x=config.average_x_direction,
             slice_label=config.slice_label if config.slice_label else None,
-            x_crop=config.x_crop
+            x_crop=config.x_crop,
+            average_over_timesteps=config.average_over_timesteps,
         )
     elif fmt in ['dat', 'text']:
         print("Using text (.dat) data loader...")
@@ -463,14 +460,16 @@ class TurbulenceXDMFData:
 
     def __init__(self, folder_path: str, cases: List[str], timesteps: List[str],
                  data_types: List[str] = None, average_z: bool = True, average_x: bool = False,
-                 slice_label: str = None, x_crop: str = '', required_vars: Optional[set] = None):
+                 slice_label: str = None, x_crop: str = '', required_vars: Optional[set] = None,
+                 average_over_timesteps: bool = False):
         self.folder_path = folder_path
         self.cases = cases
-        self.timesteps = timesteps
+        self.timesteps = list(timesteps)
         self.data_types = data_types
         self.required_vars = required_vars
         self.average_z = average_z
         self.average_x = average_x
+        self.average_over_timesteps = average_over_timesteps
         self.slice_label = slice_label
         # Nested structure: {case_timestep: {variable: array}}
         self.data: Dict[str, Dict[str, np.ndarray]] = {}
@@ -511,6 +510,10 @@ class TurbulenceXDMFData:
         for case in self.cases:
             for timestep in self.timesteps:
                 self._load_single(case, timestep)
+            if self.average_over_timesteps:
+                self._average_over_timesteps(case, self.timesteps)
+        if self.average_over_timesteps:
+            self.timesteps = ['avg']
 
     def _load_single(self, case: str, timestep: str) -> None:
         """Load XDMF files for a single case and timestep"""
@@ -589,6 +592,26 @@ class TurbulenceXDMFData:
             print(f"Loaded {len(self.data[key])} variables from XDMF files for {case}, {timestep}")
         else:
             print(f'No arrays extracted from XDMF files for {case}, {timestep}')
+
+    def _average_over_timesteps(self, case: str, timesteps: List[str]) -> None:
+        """Average loaded variable arrays across timesteps for a given case and store under '{case}_avg'."""
+        keys = [f"{case}_{ts}" for ts in timesteps if f"{case}_{ts}" in self.data]
+        if not keys:
+            print(f"No loaded data to average for case '{case}'")
+            return
+
+        all_vars: set = set()
+        for key in keys:
+            all_vars.update(self.data[key].keys())
+
+        avg_data: Dict[str, np.ndarray] = {}
+        for var in all_vars:
+            arrays = [self.data[key][var] for key in keys if var in self.data[key]]
+            if arrays:
+                avg_data[var] = np.mean(np.stack(arrays, axis=0), axis=0)
+
+        self.data[f"{case}_avg"] = avg_data
+        print(f"Averaged {len(keys)} timestep(s) for case '{case}' -> '{case}_avg' ({len(avg_data)} variables)")
 
     def get(self, case: str, variable: str, timestep: str) -> Optional[np.ndarray]:
         """Get specific data array"""

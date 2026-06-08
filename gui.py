@@ -371,6 +371,7 @@ class TurbStatsTab(ttk.Frame):
         s = sec('Averaging')
         chk(s, 'Average x direction', bv('average_x_direction', False))
         chk(s, 'Average z direction', bv('average_z_direction', True))
+        chk(s, 'Average over timesteps', bv('average_over_timesteps', False))
 
         # ---- Statistics to Compute ----
         s = sec('Statistics to Compute')
@@ -523,6 +524,7 @@ class TurbStatsTab(ttk.Frame):
             re_stress_component=v['re_stress_component'].get(),
             average_z_direction=v['average_z_direction'].get(),
             average_x_direction=v['average_x_direction'].get(),
+            average_over_timesteps=v['average_over_timesteps'].get(),
             norm_by_u_tau_sq=v['norm_by_u_tau_sq'].get(),
             norm_ux_by_u_tau=v['norm_ux_by_u_tau'].get(),
             norm_y_to_y_plus=v['norm_y_to_y_plus'].get(),
@@ -632,6 +634,7 @@ class TurbStatsTab(ttk.Frame):
             bool_fields = {
                 'thermo_on': False, 'mhd_on': False,
                 'average_x_direction': False, 'average_z_direction': True,
+                'average_over_timesteps': False,
                 'ux_velocity_on': True, 'uy_velocity_on': False, 'uz_velocity_on': False,
                 'temp_on': False, 'tke_on': False, 'coeff_friction_on': False,
                 'u_prime_sq_on': False, 'u_prime_v_prime_on': False,
@@ -725,6 +728,7 @@ class TurbStatsTab(ttk.Frame):
             '',
             f"average_x_direction = {v['average_x_direction'].get()}",
             f"average_z_direction = {v['average_z_direction'].get()}",
+            f"average_over_timesteps = {v['average_over_timesteps'].get()}",
             '',
             f"ux_velocity_on = {v['ux_velocity_on'].get()}",
             f"uy_velocity_on = {v['uy_velocity_on'].get()}",
