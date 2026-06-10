@@ -821,10 +821,10 @@ def compute_viscous_diffusion(Re, turb_comp_dict, uiuj='total'):
     L3 = turb_comp_dict['lap_re_stress_tensor_x3']
     total = L1 + L2 + L3
     if uiuj == 'total':
-        return {'viscous_diffusion': (1/Re) * np.trace(total)}
+        return {'viscous_diffusion': (0.5 / Re) * np.trace(total)}
     else:
         i, j = _parse_component(uiuj)
-        return {'viscous_diffusion': (1/Re) * total[i, j]}
+        return {'viscous_diffusion': (1 / Re) * total[i, j]}
 
 def compute_pressure_transport(tke_comp_dict, uiuj='total'): # think this needs 1 / rho
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
@@ -995,6 +995,56 @@ def analytical_laminar_mhd_prof(case, Re_bulk, Re_tau):
 # =====================================================================================================================================================
 # Body Force Analysis
 # =====================================================================================================================================================
+
+# def compute_force_components(xdmf_data_dict, y_coords):
+  
+#     def get_var(name):
+#         return xdmf_data_dict.get(name, None)
+
+    
+#     return{
+#         lorentz_x: get_var()
+#     }
+def compute_buoyancy():
+    return
+
+def compute_viscosity():
+    return
+
+def compute_dens_variation():
+    return
+
+def compute_inertia_uniform():
+    return
+
+def compute_inertia_non_uniform():
+    return
+
+def compute_total_non_uniform():
+    """total non-uniform = bouyancy + viscosity + density + inertia_non_uniform"""
+    return
+
+# def compute_lorentz_force(mag_field_direction, stuart_number, force_dict):
+#     """
+#     M_ij = N * (ε_jlm B_m <u'_i j'_l> + ε_ilm B_m <u'_j j'_l>)
+#     where ε is the levi civita tensor.
+#     """
+#     N = stuart_number
+#     B = np.array(mag_field_direction)
+#     J = force_dict{j_tensor}
+
+#     eijk = np.zeros((3, 3, 3))
+#     eijk[0, 1, 2] = eijk[1, 2, 0] = eijk[2, 0, 1] = 1.0
+#     eijk[2, 1, 0] = eijk[0, 2, 1] = eijk[1, 0, 2] = -1.0
+
+#     # C[a, l] = ε_alm B_m
+#     C = np.einsum('alm,m->al', eijk, B)  # (3, 3)
+
+#     term1 = np.einsum('l,l...->...', C[jj], J[ii])
+#     term2 = np.einsum('l,l...->...', C[ii], J[jj])
+
+#     return {f'lorentz': N * (term1 + term2)}
+
 
 
 

@@ -1180,6 +1180,7 @@ class BudgetComputer:
                 self.enabled_terms.append(('buoyancy_on', 'buoyancy', 'Buoyancy'))
             if config.mhd_on:
                 self.enabled_terms.append(('mhd_on', 'mhd', 'MHD (Lorentz)'))
+            self.enabled_terms.append(('balance', 'balance', 'Balance'))
 
         # Storage: {term_name: {(case, timestep): array}}
         self.raw_results: Dict[str, Dict[Tuple[str, str], np.ndarray]] = {
@@ -1226,10 +1227,21 @@ class BudgetComputer:
         }
 
         for _flag, term_name, _label in self.enabled_terms:
+            if term_name == 'balance':
+                continue
             result = _compute_fns[term_name](budget_comp)
             value = next(iter(result.values()))
-
             self.raw_results[term_name][(case, timestep)] = value
+
+        balance_val = None
+        for _flag, term_name, _label in self.enabled_terms:
+            if term_name == 'balance':
+                continue
+            val = self.raw_results[term_name].get((case, timestep))
+            if val is not None:
+                balance_val = val if balance_val is None else balance_val + val
+        if balance_val is not None:
+            self.raw_results['balance'][(case, timestep)] = balance_val
 
         return True
 
@@ -1340,25 +1352,29 @@ class TurbulenceStatsPipeline:
 
     def compute_all(self) -> None:
         """Compute all registered statistics for all cases and timesteps"""
+        # Use the loader's timestep list — it may have been updated (e.g. to ['avg'])
+        # by load_all() when average_over_timesteps is enabled.
+        timesteps = self.data_loader.timesteps
+
         # Separate regular stats from budget terms
         regular_stats = [s for s in self.statistics if not isinstance(s, BudgetTerm)]
         n_budget = len(self.budget_computer.enabled_terms) if self.budget_computer else 0
-        total_tasks = len(regular_stats) * len(self.config.cases) * len(self.config.timesteps)
+        total_tasks = len(regular_stats) * len(self.config.cases) * len(timesteps)
         # Budget: one compute call per case/timestep (covers all terms)
-        total_tasks += len(self.config.cases) * len(self.config.timesteps) if n_budget else 0
+        total_tasks += len(self.config.cases) * len(timesteps) if n_budget else 0
 
         with tqdm(total=total_tasks, desc="Computing statistics", unit="stat") as pbar:
             # Regular stats
             for stat in regular_stats:
                 for case in self.config.cases:
-                    for timestep in self.config.timesteps:
+                    for timestep in timesteps:
                         stat.compute_for_case(case, timestep, self.data_loader)
                         pbar.update(1)
 
             # TKE budget: one call per case/timestep computes all terms
             if self.budget_computer:
                 for case in self.config.cases:
-                    for timestep in self.config.timesteps:
+                    for timestep in timesteps:
                         self.budget_computer.compute_for_case(case, timestep, self.data_loader)
                         pbar.update(1)
 
@@ -1790,13 +1806,16 @@ class TurbulencePlotter:
                     continue
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
-                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
-                    linestyle = self._get_linestyle(case)
-                    marker = self._get_marker(case)
-                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
+                    if stat.name == 'balance':
+                        self._plot_line(ax, y_plus, profile, label, color='black', linestyle='--')
+                    else:
+                        color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                        linestyle = self._get_linestyle(case)
+                        marker = self._get_marker(case)
+                        self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
-        ax.axhline(y=0, color='black', linewidth=0.5, linestyle='--')
+        ax.axhline(y=0, color='gray', linewidth=0.5, linestyle='-')
         ax.set_title(f'TKE Budget ({component})', fontsize=self._get_title_fontsize())
         ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
         if self.config.norm_by_u_tau_sq:
