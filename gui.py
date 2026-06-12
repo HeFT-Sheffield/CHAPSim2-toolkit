@@ -1423,6 +1423,755 @@ class MonitorPointsTab(ttk.Frame):
 
 
 # =====================================================================================
+# 3D VISUALISATION TAB
+# =====================================================================================
+
+_VIS_OPACITY = ['linear', 'sigmoid', 'sigmoid_r', 'geom', 'geom_r']
+
+
+class Visu3DPanel(ttk.Frame):
+    """
+    Embeds a PyVista off-screen renderer in a tkinter Canvas.
+
+    Renders via pv.Plotter(off_screen=True) — no special VTK Tk library required.
+    The resulting image is painted onto a Canvas widget:
+      • Left-drag   → orbit  (azimuth / elevation)
+      • Right-drag  → pan
+      • Scroll      → zoom
+    Requires Pillow for image display.
+    """
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._plotter     = None
+        self._photo       = None   # keep reference so GC doesn't collect it
+        self._drag_start  = None
+        self._pan_start   = None
+        self._resize_job  = None
+
+        self._canvas = tk.Canvas(self, bg='#1a1a1a', cursor='crosshair',
+                                 highlightthickness=0)
+        self._canvas.pack(fill='both', expand=True)
+
+        self._hint_id = self._canvas.create_text(
+            300, 200, text='Configure the left panel and click Render.',
+            fill='#888888', font=('TkDefaultFont', 10))
+
+        # Mouse bindings
+        self._canvas.bind('<ButtonPress-1>',   self._on_press)
+        self._canvas.bind('<B1-Motion>',       self._on_orbit)
+        self._canvas.bind('<ButtonPress-3>',   self._on_pan_press)
+        self._canvas.bind('<B3-Motion>',       self._on_pan)
+        self._canvas.bind('<Button-4>',        lambda e: self._zoom(1.1))
+        self._canvas.bind('<Button-5>',        lambda e: self._zoom(0.9))
+        self._canvas.bind('<MouseWheel>',
+                          lambda e: self._zoom(1.1 if e.delta > 0 else 0.9))
+        self._canvas.bind('<Configure>',       self._on_configure)
+
+    # ------ Scene building -----------------------------------------------------------
+
+    def render(self, grid, cfg):
+        """Replace the current scene.  Must be called from the main (Tk) thread."""
+        import pyvista as pv
+
+        if self._plotter is not None:
+            try:
+                self._plotter.close()
+            except Exception:
+                pass
+
+        w = max(self._canvas.winfo_width(),  600)
+        h = max(self._canvas.winfo_height(), 400)
+        self._plotter = pv.Plotter(off_screen=True, window_size=[w, h])
+
+        variable = cfg['variable']
+        cmap     = cfg['cmap']
+        mode     = cfg['mode']
+
+        self._plotter.add_mesh(grid.outline(), color='gray', line_width=1)
+
+        if mode == 'slice':
+            origins = {
+                'x': lambda v: (v, 0, 0),
+                'y': lambda v: (0, v, 0),
+                'z': lambda v: (0, 0, v),
+            }
+            n_added = 0
+            for normal in ('x', 'y', 'z'):
+                pos = cfg.get(f'cut_{normal}')
+                if pos is None:
+                    continue
+                sl = grid.slice(normal=normal, origin=origins[normal](pos))
+                self._plotter.add_mesh(sl, scalars=variable, cmap=cmap,
+                                       show_scalar_bar=(n_added == 0))
+                n_added += 1
+            self._plotter.add_axes()
+            if n_added:
+                self._plotter.show_grid()
+
+        elif mode == 'iso':
+            iso_vals = cfg.get('iso_vals', [0.0])
+            grid_pt = grid.cell_data_to_point_data()
+            contours = grid_pt.contour(isosurfaces=iso_vals, scalars=variable)
+            if contours.n_points > 0:
+                self._plotter.add_mesh(contours, scalars=variable, cmap=cmap,
+                                       show_scalar_bar=True)
+            self._plotter.add_axes()
+
+        elif mode == 'volume':
+            self._plotter.add_volume(grid, scalars=variable, cmap=cmap,
+                                     opacity=cfg.get('opacity', 'sigmoid'),
+                                     show_scalar_bar=True)
+            self._plotter.add_axes()
+
+        elif mode == 'glyphs':
+            import numpy as np
+            import pyvista as pv
+            grid_pt = grid.cell_data_to_point_data()
+            u = grid_pt.point_data['qx_ccc']
+            v = grid_pt.point_data['qy_ccc']
+            w = grid_pt.point_data['qz_ccc']
+            vel = np.column_stack([u, v, w])
+            grid_pt['velocity'] = vel
+            grid_pt['velocity_magnitude'] = np.linalg.norm(vel, axis=1)
+            every_n = cfg.get('glyph_every_n', 1)
+            indices = np.arange(0, grid_pt.n_points, every_n)
+            sub = pv.PolyData(grid_pt.points[indices])
+            for key in grid_pt.point_data.keys():
+                sub[key] = grid_pt.point_data[key][indices]
+            geom = pv.Arrow() if cfg.get('glyph_type', 'arrow') == 'arrow' else pv.Cone()
+            glyphs = sub.glyph(orient='velocity', scale='velocity_magnitude',
+                               factor=cfg.get('glyph_factor', 0.1), geom=geom)
+            if glyphs.n_points > 0:
+                self._plotter.add_mesh(glyphs, scalars='velocity_magnitude',
+                                       cmap=cmap, show_scalar_bar=True)
+            self._plotter.add_axes()
+
+        elif mode == 'streamlines':
+            import numpy as np
+            grid_pt = grid.cell_data_to_point_data()
+            u = grid_pt.point_data['qx_ccc']
+            v = grid_pt.point_data['qy_ccc']
+            w = grid_pt.point_data['qz_ccc']
+            vel = np.column_stack([u, v, w])
+            grid_pt['velocity'] = vel
+            grid_pt['velocity_magnitude'] = np.linalg.norm(vel, axis=1)
+            common = dict(
+                n_points=cfg.get('stream_n_seeds', 50),
+                integration_direction=cfg.get('stream_direction', 'both'),
+                max_steps=cfg.get('stream_max_steps', 2000),
+            )
+            if cfg.get('stream_seed') == 'line':
+                streamlines = grid_pt.streamlines(
+                    'velocity',
+                    pointa=cfg['stream_pointa'],
+                    pointb=cfg['stream_pointb'],
+                    **common,
+                )
+            else:
+                streamlines = grid_pt.streamlines(
+                    'velocity',
+                    source_center=cfg['stream_center'],
+                    source_radius=cfg['stream_radius'],
+                    **common,
+                )
+            if streamlines.n_points > 0:
+                self._plotter.add_mesh(streamlines, scalars='velocity_magnitude',
+                                       cmap=cmap, line_width=2, show_scalar_bar=True)
+            self._plotter.add_axes()
+
+        self._plotter.reset_camera()
+        if self._hint_id is not None:
+            self._canvas.delete(self._hint_id)
+            self._hint_id = None
+        self._refresh()
+
+    # ------ Rendering ----------------------------------------------------------------
+
+    def _refresh(self):
+        """Render a frame off-screen and paint it onto the canvas."""
+        if self._plotter is None:
+            return
+        try:
+            from PIL import Image, ImageTk
+        except ImportError:
+            self._canvas.delete('all')
+            self._canvas.create_text(
+                300, 200,
+                text='Install Pillow (pip install Pillow) to display renders.',
+                fill='#ff8888', font=('TkDefaultFont', 10))
+            return
+
+        self._plotter.render()  # force re-render; screenshot()'s internal render() is a no-op when VTK dirty flag isn't set
+        img_arr = self._plotter.screenshot(return_img=True)
+        pil_img = Image.fromarray(img_arr)
+
+        w = self._canvas.winfo_width()
+        h = self._canvas.winfo_height()
+        if w > 1 and h > 1 and pil_img.size != (w, h):
+            pil_img = pil_img.resize((w, h), Image.BILINEAR)
+
+        self._photo = ImageTk.PhotoImage(pil_img)
+        self._canvas.delete('all')
+        self._canvas.create_image(0, 0, anchor='nw', image=self._photo)
+        self._canvas.update_idletasks()
+
+    # ------ Camera controls ----------------------------------------------------------
+
+    def _on_press(self, event):
+        self._drag_start = (event.x, event.y)
+
+    def _on_orbit(self, event):
+        if self._drag_start is None or self._plotter is None:
+            return
+        dx = event.x - self._drag_start[0]
+        dy = event.y - self._drag_start[1]
+        self._drag_start = (event.x, event.y)
+        self._plotter.camera.Azimuth(-dx * 0.4)
+        self._plotter.camera.Elevation(dy * 0.4)
+        self._refresh()
+
+    def _on_pan_press(self, event):
+        self._pan_start = (event.x, event.y)
+
+    def _on_pan(self, event):
+        if self._pan_start is None or self._plotter is None:
+            return
+        import numpy as np
+        dx = event.x - self._pan_start[0]
+        dy = event.y - self._pan_start[1]
+        self._pan_start = (event.x, event.y)
+        cam = self._plotter.camera
+        pos = np.array(cam.GetPosition())
+        fp  = np.array(cam.GetFocalPoint())
+        vu  = np.array(cam.GetViewUp())
+        fwd   = fp - pos
+        right = np.cross(fwd, vu);  right /= np.linalg.norm(right)
+        up    = np.cross(right, fwd); up   /= np.linalg.norm(up)
+        scale = np.linalg.norm(fwd) * 0.001
+        delta = (-dx * right + dy * up) * scale
+        cam.SetPosition(*(pos + delta))
+        cam.SetFocalPoint(*(fp  + delta))
+        self._plotter.renderer.ResetCameraClippingRange()
+        self._refresh()
+
+    def _zoom(self, factor):
+        if self._plotter is None:
+            return
+        self._plotter.camera.Zoom(factor)
+        self._plotter.renderer.ResetCameraClippingRange()
+        self._refresh()
+
+    def _on_configure(self, event):
+        if self._plotter is None:
+            return
+        if self._resize_job is not None:
+            self._canvas.after_cancel(self._resize_job)
+        self._resize_job = self._canvas.after(150, self._handle_resize)
+
+    def _handle_resize(self):
+        self._resize_job = None
+        if self._plotter is None:
+            return
+        w = self._canvas.winfo_width()
+        h = self._canvas.winfo_height()
+        if w > 1 and h > 1:
+            self._plotter.window_size = [w, h]
+            self._refresh()
+
+    def save_screenshot(self, path):
+        """Save the current view to a file."""
+        if self._plotter is not None:
+            self._plotter.screenshot(filename=path)
+
+
+class TurbVisuTab(ttk.Frame):
+    """3D visualisation tab — renders inside the GUI panel."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._var_meta = {}
+        self._grid_info = {}
+        self._build_ui()
+
+    # ------ Layout -------------------------------------------------------------------
+
+    def _build_ui(self):
+        pw = ttk.Panedwindow(self, orient='horizontal')
+        pw.pack(fill='both', expand=True)
+
+        left = ttk.Frame(pw, width=360)
+        left.pack_propagate(False)
+        pw.add(left, weight=0)
+
+        right = ttk.Frame(pw)
+        pw.add(right, weight=1)
+
+        self._build_controls(left)
+        self._build_right(right)
+
+    def _build_right(self, parent):
+        """Right panel: embedded 3D render widget + console strip."""
+        self._visu_panel = Visu3DPanel(parent)
+        self._visu_panel.pack(fill='both', expand=True)
+
+        ttk.Label(parent, text='Console output:', anchor='w').pack(
+            fill='x', padx=4, pady=(4, 0))
+        self._console = _make_console(parent, height=6)
+        self._console.pack(fill='x', padx=4, pady=(0, 4))
+
+    # ------ Controls (left) ----------------------------------------------------------
+
+    def _build_controls(self, parent):
+        bar = ttk.Frame(parent)
+        bar.pack(fill='x', padx=5, pady=4)
+        ttk.Button(bar, text='Render', command=self._render).pack(side='left', padx=2)
+
+        scroll = ScrollableFrame(parent)
+        scroll.pack(fill='both', expand=True, padx=4, pady=2)
+        f = scroll.inner
+
+        def sec(title):
+            lf = ttk.LabelFrame(f, text=title)
+            lf.pack(fill='x', padx=4, pady=3)
+            return lf
+
+        def row(frame, label, widget_fn, width=14):
+            r = ttk.Frame(frame)
+            r.pack(fill='x', pady=1)
+            ttk.Label(r, text=label, width=width, anchor='w').pack(side='left')
+            widget_fn(r)
+            return r
+
+        # ---- Path ----
+        s = sec('Data Path')
+        self._case_path = tk.StringVar()
+        r = ttk.Frame(s); r.pack(fill='x', pady=1)
+        ttk.Label(r, text='Case folder:', width=14, anchor='w').pack(side='left')
+        ttk.Entry(r, textvariable=self._case_path).pack(side='left', fill='x', expand=True)
+        ttk.Button(r, text='…', width=3, command=self._browse).pack(side='left')
+
+        r2 = ttk.Frame(s); r2.pack(fill='x', pady=1)
+        ttk.Button(r2, text='Scan for timesteps', command=self._scan).pack(side='left')
+
+        self._ts = tk.StringVar()
+        r3 = ttk.Frame(s); r3.pack(fill='x', pady=1)
+        ttk.Label(r3, text='Timestep:', width=14, anchor='w').pack(side='left')
+        self._ts_combo = ttk.Combobox(r3, textvariable=self._ts, state='readonly', width=16)
+        self._ts_combo.pack(side='left')
+
+        self._dtype = tk.StringVar(value='inst')
+        row(s, 'Data type:', lambda r: ttk.Combobox(
+            r, textvariable=self._dtype,
+            values=['inst', 't_avg'], state='readonly', width=16).pack(side='left'))
+
+        self._phys = tk.StringVar(value='flow')
+        row(s, 'Physics:', lambda r: ttk.Combobox(
+            r, textvariable=self._phys,
+            values=['flow', 'thermo', 'mhd'], state='readonly', width=16).pack(side='left'))
+
+        ttk.Button(s, text='Load variables', command=self._load_vars).pack(anchor='w', pady=2)
+
+        # ---- Variables ----
+        s = sec('Variable')
+        self._var_lb = tk.Listbox(
+            s, selectmode='single', height=7, exportselection=False,
+            background=_INPUT_BG, foreground=_FG,
+            selectbackground=_SEL_BG, selectforeground=_SEL_FG,
+            activestyle='none', relief='flat', borderwidth=0,
+        )
+        sb2 = ttk.Scrollbar(s, orient='vertical', command=self._var_lb.yview)
+        self._var_lb.configure(yscrollcommand=sb2.set)
+        self._var_lb.pack(side='left', fill='both', expand=True)
+        sb2.pack(side='right', fill='y')
+
+        self._use_q = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            f, text='Q-criterion  (requires qx_ccc, qy_ccc, qz_ccc)',
+            variable=self._use_q,
+        ).pack(anchor='w', padx=4, pady=2)
+
+        # ---- Visualisation mode ----
+        s = sec('Visualisation')
+        self._mode = tk.StringVar(value='slice')
+        row(s, 'Mode:', lambda r: ttk.Combobox(
+            r, textvariable=self._mode,
+            values=['slice', 'iso', 'volume', 'streamlines', 'glyphs'], state='readonly', width=16).pack(side='left'))
+
+        self._cmap = tk.StringVar(value='RdBu_r')
+        row(s, 'Colormap:', lambda r: ttk.Combobox(
+            r, textvariable=self._cmap, values=COLORMAPS, width=14).pack(side='left'))
+
+        self._stride = tk.IntVar(value=1)
+        row(s, 'Stride:', lambda r: ttk.Spinbox(
+            r, textvariable=self._stride, from_=1, to=16, width=6).pack(side='left'))
+
+        # ---- Slice planes ----
+        s = sec('Slice Planes')
+        self._cut_x = tk.StringVar()
+        self._cut_y = tk.StringVar()
+        self._cut_z = tk.StringVar()
+        row(s, 'x  (YZ plane):', lambda r: ttk.Entry(
+            r, textvariable=self._cut_x, width=12).pack(side='left'))
+        row(s, 'y  (XZ plane):', lambda r: ttk.Entry(
+            r, textvariable=self._cut_y, width=12).pack(side='left'))
+        row(s, 'z  (XY plane):', lambda r: ttk.Entry(
+            r, textvariable=self._cut_z, width=12).pack(side='left'))
+
+        # ---- Iso-surface ----
+        s = sec('Iso-surface')
+        self._iso_min = tk.StringVar()
+        self._iso_max = tk.StringVar()
+        self._iso_steps = tk.StringVar(value='1')
+        row(s, 'Min:', lambda r: ttk.Entry(r, textvariable=self._iso_min, width=12).pack(side='left'))
+        row(s, 'Max:', lambda r: ttk.Entry(r, textvariable=self._iso_max, width=12).pack(side='left'))
+        row(s, 'Steps:', lambda r: ttk.Entry(r, textvariable=self._iso_steps, width=6).pack(side='left'))
+
+        # ---- Streamlines ----
+        s = sec('Streamlines  (requires qx/qy/qz_ccc)')
+        self._stream_seed    = tk.StringVar(value='sphere')
+        self._stream_cx      = tk.StringVar()
+        self._stream_cy      = tk.StringVar()
+        self._stream_cz      = tk.StringVar()
+        self._stream_radius  = tk.StringVar()
+        self._stream_x0      = tk.StringVar()
+        self._stream_y0      = tk.StringVar()
+        self._stream_z0      = tk.StringVar()
+        self._stream_x1      = tk.StringVar()
+        self._stream_y1      = tk.StringVar()
+        self._stream_z1      = tk.StringVar()
+        self._stream_n_seeds = tk.StringVar(value='50')
+        self._stream_steps   = tk.StringVar(value='2000')
+        self._stream_dir     = tk.StringVar(value='both')
+        row(s, 'Seed type:', lambda r: ttk.Combobox(
+            r, textvariable=self._stream_seed,
+            values=['sphere', 'line'], state='readonly', width=10).pack(side='left'))
+        row(s, 'Sphere centre X:', lambda r: ttk.Entry(r, textvariable=self._stream_cx, width=12).pack(side='left'))
+        row(s, '             Y:', lambda r: ttk.Entry(r, textvariable=self._stream_cy, width=12).pack(side='left'))
+        row(s, '             Z:', lambda r: ttk.Entry(r, textvariable=self._stream_cz, width=12).pack(side='left'))
+        row(s, 'Radius (auto):', lambda r: ttk.Entry(r, textvariable=self._stream_radius, width=12).pack(side='left'))
+        row(s, 'Line start  X:', lambda r: ttk.Entry(r, textvariable=self._stream_x0, width=12).pack(side='left'))
+        row(s, '            Y:', lambda r: ttk.Entry(r, textvariable=self._stream_y0, width=12).pack(side='left'))
+        row(s, '            Z:', lambda r: ttk.Entry(r, textvariable=self._stream_z0, width=12).pack(side='left'))
+        row(s, 'Line end    X:', lambda r: ttk.Entry(r, textvariable=self._stream_x1, width=12).pack(side='left'))
+        row(s, '            Y:', lambda r: ttk.Entry(r, textvariable=self._stream_y1, width=12).pack(side='left'))
+        row(s, '            Z:', lambda r: ttk.Entry(r, textvariable=self._stream_z1, width=12).pack(side='left'))
+        row(s, 'N seeds:', lambda r: ttk.Entry(r, textvariable=self._stream_n_seeds, width=8).pack(side='left'))
+        row(s, 'Max steps:', lambda r: ttk.Entry(r, textvariable=self._stream_steps, width=8).pack(side='left'))
+        row(s, 'Direction:', lambda r: ttk.Combobox(
+            r, textvariable=self._stream_dir,
+            values=['both', 'forward', 'backward'], state='readonly', width=12).pack(side='left'))
+
+        # ---- Glyphs ----
+        s = sec('Glyphs  (requires qx/qy/qz_ccc)')
+        self._glyph_factor  = tk.StringVar()
+        self._glyph_every_n = tk.StringVar()
+        self._glyph_type    = tk.StringVar(value='arrow')
+        row(s, 'Scale factor:', lambda r: ttk.Entry(r, textvariable=self._glyph_factor,  width=10).pack(side='left'))
+        row(s, 'Every N pts:', lambda r: ttk.Entry(r, textvariable=self._glyph_every_n, width=10).pack(side='left'))
+        row(s, 'Glyph:', lambda r: ttk.Combobox(
+            r, textvariable=self._glyph_type,
+            values=['arrow', 'cone'], state='readonly', width=10).pack(side='left'))
+
+        # ---- Volume rendering ----
+        s = sec('Volume Rendering')
+        self._opacity = tk.StringVar(value='sigmoid')
+        row(s, 'Opacity:', lambda r: ttk.Combobox(
+            r, textvariable=self._opacity,
+            values=_VIS_OPACITY, state='readonly', width=14).pack(side='left'))
+
+        # ---- Screenshot ----
+        s = sec('Screenshot')
+        self._screenshot_path = tk.StringVar(value='visu_screenshot.png')
+        r4 = ttk.Frame(s); r4.pack(fill='x', pady=1)
+        ttk.Label(r4, text='Path:', width=14, anchor='w').pack(side='left')
+        ttk.Entry(r4, textvariable=self._screenshot_path).pack(side='left', fill='x', expand=True)
+        ttk.Button(r4, text='…', width=3, command=self._browse_screenshot).pack(side='left')
+        ttk.Button(s, text='Save screenshot', command=self._save_screenshot).pack(anchor='w', pady=2)
+
+    # ------ Helpers ------------------------------------------------------------------
+
+    def _log(self, msg):
+        self.after(0, lambda: _log_to(self._console, msg))
+
+    def _browse(self):
+        d = filedialog.askdirectory(title='Select case folder (containing 2_visu/)')
+        if d:
+            self._case_path.set(d)
+            self._scan()
+
+    def _browse_screenshot(self):
+        p = filedialog.asksaveasfilename(
+            title='Screenshot path',
+            defaultextension='.png',
+            filetypes=[('PNG', '*.png'), ('JPEG', '*.jpg')],
+        )
+        if p:
+            self._screenshot_path.set(p)
+
+    def _visu_folder(self):
+        base = self._case_path.get().rstrip('/')
+        candidate = os.path.join(base, '2_visu')
+        return candidate if os.path.isdir(candidate) else base
+
+    def _xdmf_path(self):
+        visu = self._visu_folder()
+        ts = self._ts.get()
+        dtype = self._dtype.get()
+        phys = self._phys.get()
+        name = (f'domain1_{phys}_{ts}.xdmf' if dtype == 'inst'
+                else f'domain1_{dtype}_{phys}_{ts}.xdmf')
+        return os.path.join(visu, name)
+
+    def _scan(self):
+        visu = self._visu_folder()
+        try:
+            from slice import get_available_timesteps
+            tss = get_available_timesteps(visu)
+            self._ts_combo['values'] = tss
+            if tss:
+                self._ts.set(tss[0])
+            _log_to(self._console, f'Found {len(tss)} timestep(s): {", ".join(tss)}')
+        except Exception as exc:
+            _log_to(self._console, f'Scan error: {exc}')
+
+    def _load_vars(self):
+        xdmf = self._xdmf_path()
+        _log_to(self._console, f'Reading metadata: {xdmf}')
+        try:
+            from utils import parse_xdmf_metadata
+            self._var_meta, self._grid_info = parse_xdmf_metadata(xdmf)
+            names = sorted(v for v, m in self._var_meta.items()
+                           if len(m.get('shape', ())) == 3)
+            self._var_lb.delete(0, tk.END)
+            for n in names:
+                self._var_lb.insert(tk.END, n)
+            _log_to(self._console, f'Loaded {len(names)} 3D variable(s).')
+
+            # Show domain range as hints for slice plane entries
+            gi = self._grid_info
+            for axis, key in [('x', 'grid_x'), ('y', 'grid_y'), ('z', 'grid_z')]:
+                arr = gi.get(key)
+                if arr is not None:
+                    mid = 0.5 * (float(arr[0]) + float(arr[-1]))
+                    _log_to(self._console,
+                            f'  {axis} range: {arr[0]:.4f} – {arr[-1]:.4f}  (mid = {mid:.4f})')
+                    getattr(self, f'_cut_{axis}').set(f'{mid:.4f}')
+        except Exception as exc:
+            _log_to(self._console, f'Error: {exc}\n{traceback.format_exc()}')
+
+    def _selected_var(self):
+        sel = self._var_lb.curselection()
+        return self._var_lb.get(sel[0]) if sel else None
+
+    # ------ Render -------------------------------------------------------------------
+
+    def _render(self):
+        use_q = self._use_q.get()
+        variable = self._selected_var()
+        if not use_q and variable is None:
+            messagebox.showwarning('No variable', 'Select a variable or enable Q-criterion.')
+            return
+        if not self._var_meta:
+            messagebox.showwarning('No metadata', 'Load variables first.')
+            return
+
+        mode   = self._mode.get()
+        cmap   = self._cmap.get()
+        stride = max(1, self._stride.get())
+
+        if use_q:
+            variable      = 'Q-criterion'
+            selected_vars = ['qx_ccc', 'qy_ccc', 'qz_ccc']
+        else:
+            selected_vars = [variable]
+
+        def _parse_float(s, fallback):
+            try:
+                return float(s.strip())
+            except (ValueError, AttributeError):
+                return fallback
+
+        gi = self._grid_info
+
+        if mode == 'slice':
+            def _mid(key):
+                arr = gi.get(key)
+                return 0.5 * (float(arr[0]) + float(arr[-1])) if arr is not None else None
+            cfg = {
+                'mode': 'slice',
+                'variable': variable,
+                'cmap': cmap,
+                'use_q_criterion': use_q,
+                'cut_x': _parse_float(self._cut_x.get(), _mid('grid_x')),
+                'cut_y': _parse_float(self._cut_y.get(), _mid('grid_y')),
+                'cut_z': _parse_float(self._cut_z.get(), _mid('grid_z')),
+            }
+        elif mode == 'iso':
+            try:
+                iso_steps = max(1, int(self._iso_steps.get() or '1'))
+            except ValueError:
+                iso_steps = 1
+            cfg = {
+                'mode': 'iso',
+                'variable': variable,
+                'cmap': cmap,
+                'use_q_criterion': use_q,
+                'iso_min': _parse_float(self._iso_min.get(), None),
+                'iso_max': _parse_float(self._iso_max.get(), None),
+                'iso_steps': iso_steps,
+            }
+        elif mode == 'volume':
+            cfg = {
+                'mode': 'volume',
+                'variable': variable,
+                'cmap': cmap,
+                'use_q_criterion': use_q,
+                'opacity': self._opacity.get(),
+            }
+        elif mode == 'streamlines':
+            try:
+                n_seeds = max(1, int(self._stream_n_seeds.get() or '50'))
+            except ValueError:
+                n_seeds = 50
+            try:
+                max_steps = max(1, int(self._stream_steps.get() or '2000'))
+            except ValueError:
+                max_steps = 2000
+            cfg = {
+                'mode': 'streamlines',
+                'variable': variable,
+                'cmap': cmap,
+                'use_q_criterion': use_q,
+                'stream_seed':      self._stream_seed.get(),
+                'stream_cx':        _parse_float(self._stream_cx.get(), None),
+                'stream_cy':        _parse_float(self._stream_cy.get(), None),
+                'stream_cz':        _parse_float(self._stream_cz.get(), None),
+                'stream_radius':    _parse_float(self._stream_radius.get(), None),
+                'stream_x0':        _parse_float(self._stream_x0.get(), None),
+                'stream_y0':        _parse_float(self._stream_y0.get(), None),
+                'stream_z0':        _parse_float(self._stream_z0.get(), None),
+                'stream_x1':        _parse_float(self._stream_x1.get(), None),
+                'stream_y1':        _parse_float(self._stream_y1.get(), None),
+                'stream_z1':        _parse_float(self._stream_z1.get(), None),
+                'stream_n_seeds':   n_seeds,
+                'stream_max_steps': max_steps,
+                'stream_direction': self._stream_dir.get(),
+            }
+            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
+        else:  # glyphs
+            cfg = {
+                'mode': 'glyphs',
+                'variable': variable,
+                'cmap': cmap,
+                'use_q_criterion': use_q,
+                'glyph_factor':  _parse_float(self._glyph_factor.get(), None),
+                'glyph_every_n': int(self._glyph_every_n.get()) if self._glyph_every_n.get().strip().isdigit() else None,
+                'glyph_type':    self._glyph_type.get(),
+            }
+            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
+
+        var_meta = dict(self._var_meta)
+
+        def worker():
+            try:
+                import turb_visu as tv
+                from utils import load_xdmf_variables
+
+                self._log(f'Loading {selected_vars}…')
+                data = load_xdmf_variables(var_meta, selected_vars, grid_info=gi)
+                if not data:
+                    self._log('Error: failed to load data.')
+                    return
+
+                if use_q:
+                    self._log('Computing Q-criterion…')
+                    q = tv.compute_q_criterion(data, gi)
+                    if q is None:
+                        return
+                    data['Q-criterion'] = q
+
+                self._log('Building grid…')
+                grid = tv.build_pyvista_grid(gi, data, stride=stride)
+                self._log(f'Grid: {grid.dimensions}, {grid.n_cells:,} cells')
+
+                if mode == 'iso':
+                    import numpy as _np
+                    arr = grid.cell_data[variable]
+                    vmin, vmax = float(arr.min()), float(arr.max())
+                    self._log(f'  {variable} range: {vmin:.4e} – {vmax:.4e}')
+                    iso_min = cfg['iso_min'] if cfg['iso_min'] is not None else 0.5 * (vmin + vmax)
+                    iso_steps = cfg['iso_steps']
+                    if iso_steps > 1:
+                        iso_max = cfg['iso_max'] if cfg['iso_max'] is not None else vmax
+                        cfg['iso_vals'] = list(_np.linspace(iso_min, iso_max, iso_steps))
+                    else:
+                        cfg['iso_vals'] = [iso_min]
+                    self._log(f'  Iso-values: {[f"{v:.4e}" for v in cfg["iso_vals"]]}')
+
+                if mode == 'streamlines':
+                    bounds = grid.bounds  # (xmin,xmax, ymin,ymax, zmin,zmax)
+                    xmid = 0.5 * (bounds[0] + bounds[1])
+                    ymid = 0.5 * (bounds[2] + bounds[3])
+                    zmid = 0.5 * (bounds[4] + bounds[5])
+                    if cfg['stream_seed'] == 'line':
+                        x0 = cfg['stream_x0'] if cfg['stream_x0'] is not None else xmid
+                        y0 = cfg['stream_y0'] if cfg['stream_y0'] is not None else ymid
+                        z0 = cfg['stream_z0'] if cfg['stream_z0'] is not None else bounds[4]
+                        x1 = cfg['stream_x1'] if cfg['stream_x1'] is not None else xmid
+                        y1 = cfg['stream_y1'] if cfg['stream_y1'] is not None else ymid
+                        z1 = cfg['stream_z1'] if cfg['stream_z1'] is not None else bounds[5]
+                        cfg['stream_pointa'] = (x0, y0, z0)
+                        cfg['stream_pointb'] = (x1, y1, z1)
+                        self._log(f'  Line seed: ({x0:.3g},{y0:.3g},{z0:.3g}) → '
+                                  f'({x1:.3g},{y1:.3g},{z1:.3g})')
+                    else:
+                        cx = cfg['stream_cx'] if cfg['stream_cx'] is not None else xmid
+                        cy = cfg['stream_cy'] if cfg['stream_cy'] is not None else ymid
+                        cz = cfg['stream_cz'] if cfg['stream_cz'] is not None else zmid
+                        cfg['stream_center'] = (cx, cy, cz)
+                        if cfg['stream_radius'] is None:
+                            cfg['stream_radius'] = 0.1 * min(
+                                bounds[1] - bounds[0],
+                                bounds[3] - bounds[2],
+                                bounds[5] - bounds[4])
+                        self._log(f'  Sphere seed: centre ({cx:.3g},{cy:.3g},{cz:.3g})  '
+                                  f'radius {cfg["stream_radius"]:.3g}')
+
+                if mode == 'glyphs':
+                    import numpy as _np
+                    if cfg['glyph_every_n'] is None:
+                        cfg['glyph_every_n'] = max(1, grid.n_points // 5000)
+                    if cfg['glyph_factor'] is None:
+                        bounds = grid.bounds
+                        min_dim = min(bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4])
+                        grid_pt_tmp = grid.cell_data_to_point_data()
+                        u = grid_pt_tmp.point_data['qx_ccc']
+                        v = grid_pt_tmp.point_data['qy_ccc']
+                        w = grid_pt_tmp.point_data['qz_ccc']
+                        vel_rms = float(_np.sqrt(_np.mean(u**2 + v**2 + w**2)))
+                        cfg['glyph_factor'] = 0.05 * min_dim / max(vel_rms, 1e-12)
+                    self._log(f'  Glyphs: every {cfg["glyph_every_n"]} pts, '
+                              f'factor {cfg["glyph_factor"]:.3g}')
+
+                # Rendering must happen on the main (Tk) thread.
+                self._log('Rendering…')
+                self.after(0, lambda g=grid, c=dict(cfg): self._visu_panel.render(g, c))
+            except Exception:
+                self._log(f'Error:\n{traceback.format_exc()}')
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _save_screenshot(self):
+        path = self._screenshot_path.get().strip() or 'visu_screenshot.png'
+        try:
+            self._visu_panel.save_screenshot(path)
+            _log_to(self._console, f'Screenshot saved: {path}')
+        except Exception as exc:
+            _log_to(self._console, f'Screenshot error: {exc}')
+
+
+# =====================================================================================
 # APPLICATION
 # =====================================================================================
 
@@ -1438,8 +2187,9 @@ class App(ttk.Window):
     def _build(self):
         nb = ttk.Notebook(self)
         nb.pack(fill='both', expand=True)
-        nb.add(TurbStatsTab(nb), text='  Turbulence Statistics  ')
-        nb.add(SliceTab(nb),     text='  Slice Visualisation  ')
+        nb.add(TurbStatsTab(nb),     text='  Turbulence Statistics  ')
+        nb.add(SliceTab(nb),         text='  Slice Visualisation  ')
+        nb.add(TurbVisuTab(nb),      text='  3D Visualisation  ')
         nb.add(MonitorPointsTab(nb), text='  Monitoring Points  ')
 
 

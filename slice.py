@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-2D Slice Visualiser for CFD Data
-Simple script for generating 2D slices from XDMF datasets.
+2D Slice Visualiser.
 Requires only numpy, matplotlib, and tqdm.
 """
 
