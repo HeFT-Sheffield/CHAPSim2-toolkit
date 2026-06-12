@@ -407,44 +407,57 @@ class TurbulenceTextData:
         self.folder_path = folder_path
         self.cases = cases
         self.timesteps = timesteps
-        self.quantities = ut.get_quantities(thermo_on)
         # Nested structure: {case_timestep: {quantity: array}}
         self.data: Dict[str, Dict[str, np.ndarray]] = {}
+        self.y_coords: Optional[np.ndarray] = None
 
     def load_all(self) -> None:
-        """Load all time-space averaged data files"""
+        """Load all time-space averaged .dat files found in each case directory."""
         for case in self.cases:
             for timestep in self.timesteps:
-                # Create nested key for this case/timestep
-                key = f"{case}_{timestep}"
-                if key not in self.data:
-                    self.data[key] = {}
+                self._load_all_for_case_timestep(case, timestep)
 
-                for quantity in self.quantities:
-                    self._load_single(case, quantity, timestep)
-
-    def _load_single(self, case: str, quantity: str, timestep: str) -> None:
-        """Load a single data file"""
+    def _load_all_for_case_timestep(self, case: str, timestep: str) -> None:
+        """Discover and load every domain1_tsp_avg_*_{timestep}.dat file for a case."""
+        import glob
+        data_dir = os.path.join(ut.case_path(self.folder_path, case), '1_data')
+        pattern = os.path.join(data_dir, f'domain1_tsp_avg_*_{timestep}.dat')
+        files = sorted(glob.glob(pattern))
+        if not files:
+            print(f'No .dat files found for {case}, {timestep}')
+            return
         key = f"{case}_{timestep}"
-        file_path = ut.data_filepath(self.folder_path, case, quantity, timestep)
-
-        print(f"Looking for files in: {file_path}")
-
-        if os.path.isfile(file_path):
+        if key not in self.data:
+            self.data[key] = {}
+        for file_path in files:
+            fname = os.path.basename(file_path)
+            # extract quantity from domain1_tsp_avg_{quantity}_{timestep}.dat
+            suffix = f'_{timestep}.dat'
+            prefix = 'domain1_tsp_avg_'
+            quantity = fname[len(prefix):-len(suffix)]
             data = ut.load_ts_avg_data(file_path)
             if data is not None:
-                if key not in self.data:
-                    self.data[key] = {}
                 self.data[key][quantity] = data
+                if self.y_coords is None and data.ndim == 2 and data.shape[1] >= 2:
+                    self.y_coords = data[:, 1]
             else:
                 print(f'.dat file is empty for {case}, {timestep}, {quantity}')
-        else:
-            print(f'No .dat file found for {case}, {timestep}, {quantity}')
 
     def get(self, case: str, quantity: str, timestep: str) -> Optional[np.ndarray]:
-        """Get specific data array"""
+        """Get specific data array (value column only)."""
         key = f"{case}_{timestep}"
-        return self.data.get(key, {}).get(quantity)
+        arr = self.data.get(key, {}).get(quantity)
+        if arr is None:
+            return None
+        return arr[:, 2]
+
+    def get_raw_dict(self, case: str, timestep: str) -> Optional[Dict[str, np.ndarray]]:
+        """Get the full data dictionary for a case/timestep (for TKE budget computation)."""
+        key = f"{case}_{timestep}"
+        raw = self.data.get(key, None)
+        if raw is None:
+            return None
+        return {name: arr[:, 2] for name, arr in raw.items()}
 
     def has(self, case: str, quantity: str, timestep: str) -> bool:
         """Check if data exists"""
@@ -476,6 +489,7 @@ class TurbulenceXDMFData:
         self.grid_info: Dict = {}
         self.y_coords: Optional[np.ndarray] = None
         self.x_coords: Optional[np.ndarray] = None
+        self._full_x_coords: Optional[np.ndarray] = None
         self.z_coords: Optional[np.ndarray] = None
         try:
             self.x_crop: Optional[Tuple[float, float]] = ut.parse_x_crop_input(x_crop)
@@ -485,15 +499,16 @@ class TurbulenceXDMFData:
 
     def _apply_x_crop_to_arrays(self, arrays_for_key: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Apply optional x-crop once to all compatible arrays for a case/timestep."""
-        if self.x_crop is None or self.x_coords is None:
+        x_ref = self._full_x_coords if self._full_x_coords is not None else self.x_coords
+        if self.x_crop is None or x_ref is None:
             return arrays_for_key
 
         cropped_arrays: Dict[str, np.ndarray] = {}
         cropped_x_coords = None
 
         for name, values in arrays_for_key.items():
-            if values.ndim >= 2 and values.shape[1] in (len(self.x_coords), len(self.x_coords) - 1):
-                cropped_values, candidate_x = ut.apply_x_crop(values, self.x_coords, self.x_crop)
+            if values.ndim >= 2 and values.shape[-1] in (len(x_ref), len(x_ref) - 1):
+                cropped_values, candidate_x = ut.apply_x_crop(values, x_ref, self.x_crop)
                 cropped_arrays[name] = cropped_values
                 if cropped_x_coords is None and candidate_x is not None:
                     cropped_x_coords = candidate_x
@@ -575,6 +590,7 @@ class TurbulenceXDMFData:
                         self.x_coords = x_nodes.copy()
                     else:
                         self.x_coords = np.linspace(x_nodes.min(), x_nodes.max(), nx)
+                    self._full_x_coords = self.x_coords
 
             if self.z_coords is None and grid_info:
                 z_nodes = grid_info.get('grid_z', None)
@@ -1219,8 +1235,8 @@ class BudgetComputer:
             'dissipation':         lambda d: op.compute_dissipation(Re, d, self.uiuj),
             'mean_convection':     lambda d: op.compute_mean_convection(d, self.uiuj),
             'viscous_diffusion':   lambda d: op.compute_viscous_diffusion(Re, d, self.uiuj),
-            'pressure_transport':  lambda d: op.compute_pressure_transport(d, self.uiuj),
-            'pressure_strain':     lambda d: op.compute_pressure_strain(d, self.uiuj),
+            'pressure_transport':  lambda d: op.compute_pressure_transport(d, self.uiuj, u_ref),
+            'pressure_strain':     lambda d: op.compute_pressure_strain(d, self.uiuj, u_ref),
             'turbulent_convection':lambda d: op.compute_turbulent_convection(d, self.uiuj),
             'buoyancy':            lambda d: op.compute_buoyancy_term(self.config.gravity_direction, u_ref, l_ref, d, self.uiuj),
             'mhd':                 lambda d: op.compute_mhd_term(self.config.mag_field_direction, self.config.stuart_number, d, self.uiuj),

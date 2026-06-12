@@ -11,29 +11,6 @@ def _extract_val(data):
         return data[:, 2]
     return data
 
-def compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
-    """Compute wall shear stress quantities from near-wall velocity data.
-
-    For nD native arrays the wall gradient is computed from the first two
-    y-indices (axis 0) and then averaged over any remaining axes so that
-    u_tau is a single scalar.
-    """
-    Re_bulk = int(Re_bulk)
-    if y_coords is not None:
-        # Native array: axis-0 is y.  ux_data[0], ux_data[1] may be 1-D (nx,) or scalar
-        du = ux_data[0] - ux_data[1]
-        dy = y_coords[0] - y_coords[1]
-    else:
-        du = ux_data[0, 2] - ux_data[1, 2]
-        dy = ux_data[0, 1] - ux_data[1, 1]
-    dudy = du / dy
-    # Average over any spatial dims so u_tau is always a scalar
-    dudy = np.mean(dudy)
-    tau_w = dudy / Re_bulk
-    u_tau_sq = abs(tau_w)
-    u_tau = np.sqrt(u_tau_sq)
-    return u_tau, u_tau_sq, tau_w
-
 def interpolate_wall_point(cell_data, y_coords=None, wall='lower'):
     """Interpolate a wall value from the two nearest cell-centre values.
 
@@ -826,17 +803,17 @@ def compute_viscous_diffusion(Re, turb_comp_dict, uiuj='total'):
         i, j = _parse_component(uiuj)
         return {'viscous_diffusion': (1 / Re) * total[i, j]}
 
-def compute_pressure_transport(tke_comp_dict, uiuj='total'): # think this needs 1 / rho
+def compute_pressure_transport(tke_comp_dict, uiuj='total', u_ref=1): # think this needs 1 / rho
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
     P = tke_comp_dict['press_velocity_fluc_grad_tensor']
     f = tke_comp_dict['f']
     if uiuj == 'total':
-        return {'pressure_transport': -np.trace(P) if f is None else -np.trace(P) / f}
+        return {'pressure_transport': -np.trace(P) * u_ref if f is None else -u_ref * np.trace(P) / f}
     else:
         i, j = _parse_component(uiuj)
-        return {'pressure_transport': -(P[i, j] + P[j, i]) if f is None else -(P[i, j] + P[j, i]) / f}
+        return {'pressure_transport': -(P[i, j] + P[j, i]) * u_ref if f is None else -u_ref * (P[i, j] + P[j, i]) / f}
 
-def compute_pressure_strain(tke_comp_dict, uiuj='total'):
+def compute_pressure_strain(tke_comp_dict, uiuj='total', u_ref=1):
     """
     Pressure strain: Π_ij = ⟨p'(∂u'_i/∂x_j + ∂u'_j/∂x_i)⟩ / ⟨ρ⟩
 
@@ -848,11 +825,11 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total'):
     S = tke_comp_dict['pressure_strain_tensor']
     if uiuj == 'total':
         result = np.einsum('ii...->...', S)
-        return {'pressure_strain': result if f is None else result / f}
+        return {'pressure_strain': result * u_ref if f is None else u_ref * result / f}
     else:
         i, j = _parse_component(uiuj)
         result = S[i, j] + S[j, i]
-        return {'pressure_strain': result if f is None else result / f}
+        return {'pressure_strain': result * u_ref if f is None else u_ref * result / f}
 
 # def compute_pressure_work(tke_comp_dict, uiuj='total'):
 #     """
@@ -953,6 +930,29 @@ def norm_ux_velocity_wrt_u_tau(ux_data, Re_bulk, y_coords=None):
     u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
     profile = ux_data if y_coords is not None else ux_data[:, 2]
     return np.divide(np.asarray(profile), u_tau)
+
+def compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
+    """Compute wall shear stress quantities from near-wall velocity data.
+
+    For nD native arrays the wall gradient is computed from the first two
+    y-indices (axis 0) and then averaged over any remaining axes so that
+    u_tau is a single scalar.
+    """
+    Re_bulk = int(Re_bulk)
+    if y_coords is not None:
+        # Native array: axis-0 is y.  ux_data[0], ux_data[1] may be 1-D (nx,) or scalar
+        du = ux_data[0] - ux_data[1]
+        dy = y_coords[0] - y_coords[1]
+    else:
+        du = ux_data[0, 2] - ux_data[1, 2]
+        dy = ux_data[0, 1] - ux_data[1, 1]
+    dudy = du / dy
+    # Average over any spatial dims so u_tau is always a scalar
+    dudy = np.mean(dudy)
+    tau_w = dudy / Re_bulk
+    u_tau_sq = abs(tau_w)
+    u_tau = np.sqrt(u_tau_sq)
+    return u_tau, u_tau_sq, tau_w
 
 def norm_y_to_y_plus(y, ux_data, Re_bulk, y_coords=None):
     Re_bulk = int(Re_bulk)
