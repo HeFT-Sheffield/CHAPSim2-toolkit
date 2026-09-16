@@ -111,8 +111,8 @@ class Config:
     reynolds_anisotropy_on: bool = False
     vorticity_anisotropy_on: bool = False
 
-    # Which wall half_channel_plot shows: 'lower' -> y in [-1, 0] (near the
-    # y=-1 wall), 'upper' -> y in [0, 1] (near the y=+1 wall).
+    # Which wall half_channel_plot shows: 'lower' -> the y=-1 wall, 'upper'
+    # -> the y=+1 wall, 'average' -> the mean for symmetric flows.
     half_channel_side: str = 'lower'
 
     # Mean electric current density profiles — see MeanCurrentDensityj1/j2/j3.
@@ -616,7 +616,9 @@ class TurbulenceXDMFData:
             average_z=self.average_z, average_x=self.average_x
         )
 
-        if arrays and key in arrays:
+        # xdmf_reader_wrapper always returns the {case_timestep: {...}} key, even
+        # when nothing was read — so test the inner dict, not just the key.
+        if arrays and arrays.get(key):
             # Store grid info if not already stored
             if not self.grid_info and grid_info:
                 self.grid_info = grid_info
@@ -668,7 +670,8 @@ class TurbulenceXDMFData:
             self.data[key] = self._apply_x_crop_to_arrays(dict(arrays[key]))
             print(f"Loaded {len(self.data[key])} variables from XDMF files for {case}, {timestep}")
         else:
-            print(f'No arrays extracted from XDMF files for {case}, {timestep}')
+            print(f'No {self.data_types} arrays extracted from XDMF files for '
+                  f'{case}, {timestep} — skipping this timestep')
 
     def _average_over_timesteps(self, case: str, timesteps: List[str]) -> None:
         """Average loaded variable arrays across timesteps for a given case and store under '{case}_avg'."""
@@ -2164,31 +2167,22 @@ class TurbulenceStatsPipeline:
                         normed = op.norm_ux_velocity_wrt_u_tau(ux_data, ref_Re, y_coords=y_coords)
                         print(f'u1 velocity normalised by u_tau for {case}, {timestep}')
 
-                    # Symmetric averaging along axis 0 (wall-normal direction).
-                    # Anisotropy invariants are excluded: II/III are nonlinear
-                    # (quadratic/cubic) functions of the anisotropy tensor, so
-                    # averaging them pointwise across the two halves is not the
-                    # same as computing invariants of an averaged tensor — it
-                    # can produce (II, III) pairs outside the realizable Lumley
-                    # triangle even when every source point was valid. Kept at
-                    # full profile here; _plot_lumley_triangle_figure does a
-                    # plain near-wall truncation (no averaging) instead.
+
                     is_x_profile_only = getattr(stat, 'x_profile_only', False)
                     is_anisotropy_invariant = stat.name in (
                         'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
                     )
                     if self.config.half_channel_plot and not is_x_profile_only and not is_anisotropy_invariant:
-                        half = normed.shape[0] // 2
-                        if stat.name != 'u_prime_v_prime' and stat.name != 'temperature':
-                            normed_avg = op.symmetric_average(normed)
-                            stat.processed_results[(case, timestep)] = normed_avg
+
+                        half_len = normed.shape[0] - normed.shape[0] // 2
+                        side = self.config.half_channel_side
+
+                        if side == 'average' and stat.name not in ('u_prime_v_prime', 'temperature'):
+                            stat.processed_results[(case, timestep)] = op.symmetric_average(normed)
+                        elif side == 'upper':
+                            stat.processed_results[(case, timestep)] = np.flip(normed, axis=0)[:half_len]
                         else:
-                            # 'upper' mirrors symmetric_average's own "second
-                            # half" convention (np.flip(...)[:half]), so this
-                            # stays index-aligned with _get_y_plus's coordinates.
-                            side_sliced = (np.flip(normed, axis=0)[:half]
-                                           if self.config.half_channel_side == 'upper' else normed[:half])
-                            stat.processed_results[(case, timestep)] = side_sliced
+                            stat.processed_results[(case, timestep)] = normed[:half_len]
                     else:
                         stat.processed_results[(case, timestep)] = normed
 
@@ -2341,7 +2335,9 @@ class TurbulencePlotter:
 
     def _get_y_profile_xlabel(self) -> str:
         """Return x-axis label for wall-normal profiles."""
-        return '$y^+$' if self.config.norm_y_to_y_plus else '$y$'
+        if self.config.norm_y_to_y_plus:
+            return '$y^+$'
+        return 'Distance from wall' if self.config.half_channel_plot else '$y$'
 
     def _get_stat_ylabel(self, stat_name: str, stat_label: str) -> str:
         """Return y-axis label matching enabled normalisation options."""
@@ -3009,9 +3005,11 @@ class TurbulencePlotter:
 
                 y = y_coords.copy()
                 if self.config.half_channel_plot:
-                    # Same wall-first slicing convention as _get_y_plus.
-                    y = (np.flip(y)[:values.shape[0]] if self.config.half_channel_side == 'upper'
-                         else y[:values.shape[0]])
+                    # Same wall-first convention as _get_y_plus: distance from
+                    # the selected wall, 0 at the wall.
+                    n = values.shape[0]
+                    y = (1.0 - np.flip(y)[:n] if self.config.half_channel_side == 'upper'
+                         else y[:n] + 1.0)
 
                 X, Y = np.meshgrid(x_coords, y)
 
@@ -3023,7 +3021,8 @@ class TurbulencePlotter:
                 if self.config.large_text_on:
                     cbar.ax.tick_params(labelsize=13)
                 ax.set_xlabel('$x$', fontsize=self._get_axis_label_fontsize())
-                ax.set_ylabel('$y$', fontsize=self._get_axis_label_fontsize())
+                ax.set_ylabel('Distance from wall' if self.config.half_channel_plot else '$y$',
+                              fontsize=self._get_axis_label_fontsize())
                 ax.set_title(f'{stat.label}  ({case}, t={timestep})', fontsize=self._get_title_fontsize())
                 self._apply_axis_text_style(ax)
 
@@ -3225,10 +3224,10 @@ class TurbulencePlotter:
         """Calculate y, y+, or wall-distance coordinates for a case.
 
         Full channel: y spans [-1, 1] as loaded.
-        Half channel: 'lower' -> y in [-1, 0] (near the y=-1 wall), 'upper'
-        -> y in [0, 1] (near the y=+1 wall) — matching half_channel_side.
-        y+ normalization always measures distance from the selected wall
-        (0 at the wall), regardless of which raw range is shown.
+        Half channel: always distance from the selected wall (0 at the wall,
+        increasing toward the centreline), so 'lower' and 'upper' plot on the
+        same axis and can be compared directly. 'average' is indexed from the
+        lower wall, matching symmetric_average's output.
 
         `as_wall_distance` forces a 0-at-the-wall, increasing-toward-
         centreline return even when norm_y_to_y_plus is off — for callers
@@ -3245,12 +3244,7 @@ class TurbulencePlotter:
         y = y_coords.copy() if y_coords is not None else ux_data[:, 1]
 
         if self.config.half_channel_plot:
-            # Must match op.symmetric_average's fold length exactly: for odd
-            # ny that's half+1 (it keeps the centerline point).
             half_len = len(y) - len(y) // 2
-            # 'upper' mirrors symmetric_average's own "second half"
-            # convention (np.flip(...)[:half]) so a case/timestep's data and
-            # coordinates stay index-aligned wall-first either way.
             side = self.config.half_channel_side
             y = np.flip(y)[:half_len] if side == 'upper' else y[:half_len]
             wall_distance = (1.0 - y) if side == 'upper' else (y + 1.0)
@@ -3261,7 +3255,7 @@ class TurbulencePlotter:
             cur_Re = op.get_Re(case, self.config.cases, self.config.Re, ux_data,
                                self.config.forcing, y_coords=y_coords)
             return op.norm_y_to_y_plus(wall_distance, ux_data, cur_Re, y_coords=y_coords)
-        elif as_wall_distance:
+        elif as_wall_distance or self.config.half_channel_plot:
             return wall_distance
         else:
             return y

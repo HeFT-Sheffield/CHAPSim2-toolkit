@@ -476,7 +476,7 @@ class TurbStatsTab(ttk.Frame):
         s = sec('Plotting')
         crow(s, 'Domain', sv('channel_plot_mode', 'full channel'),
              ['full channel', 'half channel', 'surface plot'])
-        crow(s, 'Half channel side', sv('half_channel_side', 'lower'), ['lower', 'upper'])
+        crow(s, 'Half channel side', sv('half_channel_side', 'lower'), ['lower', 'upper', 'average'])
         crow(s, 'Axis scale', sv('axis_scale', 'linear'), ['linear', 'log'])
         chk(s, 'Multi-plot', bv('multi_plot', True))
         chk(s, 'Large text', bv('large_text_on', False))
@@ -2065,7 +2065,8 @@ class TurbVisuTab(ttk.Frame):
         def _mk_color_by(r):
             self._color_by_combo = ttk.Combobox(
                 r, textvariable=self._color_by,
-                values=['same', 'q_criterion', 'vorticity'], state='readonly', width=16)
+                values=['same', 'Q criterion', 'vorticity', 'distance from wall'],
+                state='readonly', width=16)
             self._color_by_combo.pack(side='left')
         row(s, 'Colour by:', _mk_color_by)
         self._color_vort_component = tk.StringVar(value='z')
@@ -2146,7 +2147,8 @@ class TurbVisuTab(ttk.Frame):
             self._var_lb.delete(0, tk.END)
             for n in names:
                 self._var_lb.insert(tk.END, n)
-            self._color_by_combo['values'] = ['same', 'q_criterion', 'vorticity'] + names
+            self._color_by_combo['values'] = [
+                'same', 'q_criterion', 'vorticity', 'wall_distance'] + names
             _log_to(self._console, f'Loaded {len(names)} 3D variable(s).')
 
             # Show domain range as hints for slice plane entries
@@ -2206,7 +2208,8 @@ class TurbVisuTab(ttk.Frame):
         color_by = None if color_by_choice == 'same' else color_by_choice
         if color_by in ('q_criterion', 'vorticity'):
             selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
-        elif color_by:
+        elif color_by and color_by != 'wall_distance':
+            # wall_distance is purely geometric — nothing extra to load.
             selected_vars = list({color_by} | set(selected_vars))
 
         def _parse_float(s, fallback):
@@ -2357,6 +2360,10 @@ class TurbVisuTab(ttk.Frame):
                         if vorticity is None:
                             return
                         data[color_field_name] = vorticity
+                elif color_by == 'wall_distance':
+                    self._log('Computing distance from the wall (colour)…')
+                    color_field_name = tv.WALL_DISTANCE_FIELD
+                    data[color_field_name] = tv.compute_wall_distance(gi, stride)
                 elif color_by:
                     color_field_name = color_by
 

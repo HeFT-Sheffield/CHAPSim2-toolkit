@@ -35,6 +35,8 @@ COLORMAPS = ['RdBu_r', 'viridis', 'plasma', 'inferno', 'coolwarm', 'jet']
 
 OPACITY_PRESETS = ['linear', 'sigmoid', 'sigmoid_r', 'geom', 'geom_r']
 
+WALL_DISTANCE_FIELD = 'Wall-distance'
+
 
 # ---------------------------------------------------------------------------
 # Data loading and grid construction
@@ -81,9 +83,6 @@ def build_pyvista_grid(grid_info, data_dict, stride=1):
 def strided_grid_info(grid_info, stride):
     """Return grid_info with coordinate arrays subsampled by `stride`.
 
-    Use this to get coordinates consistent with data that was already
-    loaded pre-strided (e.g. before calling compute_q_criterion, which
-    needs grid_x/y/z the same length as the velocity arrays it differentiates).
     """
     if stride <= 1:
         return grid_info
@@ -93,6 +92,18 @@ def strided_grid_info(grid_info, stride):
         'grid_y': grid_info['grid_y'][::stride],
         'grid_z': grid_info['grid_z'][::stride],
     }
+
+
+def compute_wall_distance(grid_info, stride=1):
+    """Cell-centred distance from the nearest wall, shaped (nz, ny, nx). Channel Only.
+
+    """
+    gi = strided_grid_info(grid_info, stride)
+    x, y, z = gi['grid_x'], gi['grid_y'], gi['grid_z']
+    y_centres = 0.5 * (y[:-1] + y[1:])
+    distance = np.minimum(y_centres - float(y[0]), float(y[-1]) - y_centres)
+    nz, ny, nx = len(z) - 1, len(y_centres), len(x) - 1
+    return np.broadcast_to(distance[None, :, None], (nz, ny, nx)).copy()
 
 
 def strided_cell_count(grid_info, stride):
@@ -245,9 +256,12 @@ def get_visualization_config(var_metadata, grid_info):
     color_vorticity_component = 'z'
     if mode == 'iso':
         print("\nColour iso-surfaces by a different variable? (leave blank to use the same field)")
-        print("  Options: a variable name, 'q' (Q-criterion), 'vort' (Vorticity)")
+        print("  Options: a variable name, 'q' (Q-criterion), 'vort' (Vorticity), "
+              "'wall' (distance from the wall)")
         color_choice = input("Colour by [same]: ").strip().lower()
-        if color_choice in ('q', 'q-criterion', 'qcriterion'):
+        if color_choice in ('wall', 'wall-distance', 'wall_distance'):
+            color_by = 'wall_distance'
+        elif color_choice in ('q', 'q-criterion', 'qcriterion'):
             color_by = 'q_criterion'
             selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
         elif color_choice in ('vort', 'vorticity'):
@@ -646,6 +660,9 @@ def main():
             if vorticity is None:
                 return
             data[color_field_name] = vorticity
+    elif color_by == 'wall_distance':
+        color_field_name = WALL_DISTANCE_FIELD
+        data[color_field_name] = compute_wall_distance(grid_info, stride)
     elif color_by:
         color_field_name = color_by
 
