@@ -940,28 +940,30 @@ class TurbulentKineticEnergy(Profiles):
 class PeakGrowth(Profiles):
     """Base for 'peak value at each x' statistics: the wall-normal maximum
     of a quantity, plotted against x to show how it progresses down the
-    channel. All subclasses are grouped into one combined figure regardless
-    of which family (Profiles/ReStresses) the equivalent non-peak statistic
-    belongs to — see TurbulenceStatsPipeline.get_statistics_by_class.
+    channel.
+    
     """
 
-    def __init__(self, name: str, label: str, required_quantities: List[str]):
+    def __init__(self, name: str, label: str, required_quantities: List[str],
+                 half_channel_side: Optional[str] = None):
         super().__init__(name, label, required_quantities)
         self.x_profile_only = True
+        self.half_channel_side = half_channel_side
 
 
 class PeakTKE(PeakGrowth):
     """Peak (wall-normal maximum) TKE at each streamwise location."""
 
-    def __init__(self):
-        super().__init__('tke_peak', 'Max. k', ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'])
+    def __init__(self, half_channel_side: Optional[str] = None):
+        super().__init__('tke_peak', 'Max. k', ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'],
+                         half_channel_side)
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         u_prime_sq = op.compute_normal_stress(data_dict['u1'], data_dict['uu11'])
         v_prime_sq = op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
         w_prime_sq = op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
         tke = op.compute_tke(u_prime_sq, v_prime_sq, w_prime_sq)
-        return op.compute_peak_over_y(tke)
+        return op.compute_peak_over_y(tke, half=self.half_channel_side)
 
 
 class PeakReynoldsStress(PeakGrowth):
@@ -970,14 +972,17 @@ class PeakReynoldsStress(PeakGrowth):
     fields to use, instantiated once per component (u'u', v'v', w'w').
     """
 
-    def __init__(self, name: str, label: str, velocity_key: str, stress_key: str):
-        super().__init__(f'{name}_max', f'Max. {label}', [velocity_key, stress_key])
+    def __init__(self, name: str, label: str, velocity_key: str, stress_key: str,
+                 half_channel_side: Optional[str] = None):
+        super().__init__(f'{name}_max', f'Max. {label}', [velocity_key, stress_key],
+                         half_channel_side)
         self._velocity_key = velocity_key
         self._stress_key = stress_key
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         return op.compute_peak_over_y(
-            op.compute_normal_stress(data_dict[self._velocity_key], data_dict[self._stress_key])
+            op.compute_normal_stress(data_dict[self._velocity_key], data_dict[self._stress_key]),
+            half=self.half_channel_side,
         )
 
 
@@ -1975,10 +1980,14 @@ class TurbulenceStatsPipeline:
             self.statistics.append(TurbulentKineticEnergy())
 
         if self.config.tke_peak_growth_on:
-            self.statistics.append(PeakTKE())
-            self.statistics.append(PeakReynoldsStress('u_prime_sq', "<u'u'>", 'u1', 'uu11'))
-            self.statistics.append(PeakReynoldsStress('v_prime_sq', "<v'v'>", 'u2', 'uu22'))
-            self.statistics.append(PeakReynoldsStress('w_prime_sq', "<w'w'>", 'u3', 'uu33'))
+            # Peak stats are reduced over y at compute time, so the half-channel
+            # selection has to be applied there rather than when processing.
+            peak_side = (self.config.half_channel_side
+                         if self.config.half_channel_plot else None)
+            self.statistics.append(PeakTKE(peak_side))
+            self.statistics.append(PeakReynoldsStress('u_prime_sq', "<u'u'>", 'u1', 'uu11', peak_side))
+            self.statistics.append(PeakReynoldsStress('v_prime_sq', "<v'v'>", 'u2', 'uu22', peak_side))
+            self.statistics.append(PeakReynoldsStress('w_prime_sq', "<w'w'>", 'u3', 'uu33', peak_side))
 
         if self.config.temp_on:
             self.statistics.append(Temperature(self.config.norm_temp_by_ref_temp, self.config.ref_temp, self.config.cases))
