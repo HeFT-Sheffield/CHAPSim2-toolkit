@@ -286,6 +286,109 @@ def build_save_path(save_dir, variable_name, slice_token, timestep, interpolated
     return os.path.join(save_dir, filename)
 
 
+# ===================================================================
+# VARIABLE LABELS
+# ===================================================================
+# Base names that map to a short symbol or an explicit label.
+
+VARIABLE_LABELS = {
+    # --- Velocities (CHAPSim stores instantaneous velocities in q*_ccc) ---
+    'qx_ccc': r"Instantaneous Streamwise Velocity",
+    'qy_ccc': r"Instantaneous Wall-normal Velocity",
+    'qz_ccc': r"Instantaneous Spanwise Velocity",
+    'u1': r"Time-averaged Streamwise Velocity",
+    'u2': r"Time-averaged Wall-normal Velocity",
+    'u3': r"Time-averaged Spanwise Velocity",
+    # --- Pressure / density / enthalpy ---
+    'pressure': r"Pressure",
+    'pr': r"Time-averaged Pressure",
+    'Density': r"Density",
+    'f': r"Density",
+    'Enthalpy': r"Enthalpy",
+    # --- Thermal ---
+    'Temperature': r"Temperature",
+    'T': r"Temperature",
+    'Conductivity': r"Thermal Conductivity",
+    'Viscosity': r"Viscosity",
+    # --- MHD ---
+    'electric_potential': r"Electric Potential",
+    'e': r"Electric Potential",
+    'jx_current': r"Electric Current Density",
+    'jy_current': r"Electric Current Density",
+    'jz_current': r"Electric Current Density",
+    'j1': r"Electric Current Density",
+    'j2': r"Electric Current Density",
+    'j3': r"Electric Current Density",
+    'fx_Lorentz': r"Lorentz Force",
+    'fy_Lorentz': r"Lorentz Force$",
+    'fz_Lorentz': r"Lorentz Force",
+}
+
+COLORBAR_LABELS = {
+    # --- Velocities (q*_ccc = instantaneous, u* = time-averaged) ---
+    'qx_ccc': r"$u_x$",
+    'qy_ccc': r"$u_y$",
+    'qz_ccc': r"$u_z$",
+    'u1': r"$U_x$",
+    'u2': r"$U_y$",
+    'u3': r"$U_z$",
+    # --- Pressure / density / enthalpy ---
+    'pressure': r"$p$",
+    'pr': r"$\langle p \rangle$",
+    'Density': r"$\rho$",
+    'f': r"$\rho$",
+    'Enthalpy': r"$h$",
+    # --- Thermal ---
+    'Temperature': r"$T$",
+    'T': r"$T$",
+    'Conductivity': r"$\lambda$",
+    'Viscosity': r"$\mu$",
+    # --- MHD ---
+    'electric_potential': r"$\varphi$",
+    'e': r"$\langle \varphi \rangle$",
+    'jx_current': r"$j_x$",
+    'jy_current': r"$j_y$",
+    'jz_current': r"$j_z$",
+    'j1': r"$j_x$",
+    'j2': r"$j_y$",
+    'j3': r"$j_z$",
+    'fx_Lorentz': r"$F_x^{\mathrm{Lorentz}}$",
+    'fy_Lorentz': r"$F_y^{\mathrm{Lorentz}}$",
+    'fz_Lorentz': r"$F_z^{\mathrm{Lorentz}}$",
+}
+
+_LABEL_PREFIXES = ('tsp_avg_', 't_avg_')
+
+
+def _base_variable_name(variable_name):
+    """Strip the t_avg_/tsp_avg_ prefix and trailing apostrophe."""
+    name = str(variable_name).rstrip("'")
+    for prefix in _LABEL_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def variable_label(variable_name):
+    """Return the full descriptive label used in figure titles.
+
+    Falls back to the raw variable name if not found in VARIABLE_LABELS.
+    """
+    return VARIABLE_LABELS.get(_base_variable_name(variable_name), variable_name)
+
+
+def variable_colorbar_label(variable_name):
+    """Return the short symbol label used on the colour bar.
+
+    Uses COLORBAR_LABELS, falling back to VARIABLE_LABELS and then to the raw
+    variable name.
+    """
+    base = _base_variable_name(variable_name)
+    if base in COLORBAR_LABELS:
+        return COLORBAR_LABELS[base]
+    return VARIABLE_LABELS.get(base, variable_name)
+
+
 def get_slice_location(grid_info, plane, index):
     """Get the physical location of the slice."""
     if plane == 'xy':
@@ -302,6 +405,35 @@ def get_slice_location(grid_info, plane, index):
         if index < len(coords):
             return coords[index]
     return index
+
+
+def coord_extent(coord):
+    """Physical length spanned by a coordinate array."""
+    return abs(float(coord[-1]) - float(coord[0])) if len(coord) > 1 else 0.0
+
+
+def needs_horizontal_swap(coord1, coord2):
+    """True when coord2 spans a larger physical extent than coord1."""
+    return coord_extent(coord2) > coord_extent(coord1)
+
+
+def orient_slice_horizontally(slice_data, coord1, coord2, axis_labels):
+    """Put the widest in-plane dimension on the horizontal axis.
+
+    Returns:
+        (slice_data, coord1, coord2, axis_labels) unchanged if coord1 already
+        spans the larger extent (or the lengths are equal), otherwise the
+        transposed/swapped version.
+    """
+    if not needs_horizontal_swap(coord1, coord2):
+        return slice_data, coord1, coord2, axis_labels
+
+    return (
+        slice_data.T,
+        coord2,
+        coord1,
+        (axis_labels[1], axis_labels[0]),
+    )
 
 
 def default_t_avg_path(config):
@@ -333,7 +465,8 @@ def default_t_avg_path(config):
 def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
                cmap='RdBu_r', vmin=None, vmax=None, symmetric=False,
                slice_info="", save_path=None, display=False,
-               smooth_point_data=False, center_zero=False):
+               smooth_point_data=False, center_zero=False,
+               orient_horizontal=True):
     """
     Plot a 2D slice with colorbar.
 
@@ -348,8 +481,18 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
         slice_info: string describing slice location
         save_path: path to save figure (None to skip saving)
         display: whether to display the figure
+        orient_horizontal: if True, put the widest in-plane dimension on the
+            horizontal axis (see orient_slice_horizontally)
     """
-    fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
+    if orient_horizontal:
+        slice_data, coord1, coord2, axis_labels = orient_slice_horizontally(
+            slice_data, coord1, coord2, axis_labels
+        )
+
+    fig, ax = plt.subplots(
+        figsize=(10, 6),
+        constrained_layout={'h_pad': 0.3, 'w_pad': 0.3},
+    )
 
     # Handle color scale
     data_min = np.nanmin(slice_data)
@@ -426,11 +569,19 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
             **color_kwargs
         )
 
-    cbar = fig.colorbar(pcm, ax=ax, label=variable_name)
+    cbar = fig.colorbar(
+        pcm,
+        ax=ax,
+        label=variable_colorbar_label(variable_name),
+        orientation='horizontal',
+        location='bottom',
+        pad=0.15,
+        shrink=0.5,
+    )
 
     ax.set_xlabel(axis_labels[0])
     ax.set_ylabel(axis_labels[1])
-    ax.set_title(f'{variable_name} {slice_info}')
+    ax.set_title(f'{variable_label(variable_name)} {slice_info}')
     ax.set_aspect('equal', adjustable='box')
 
     # Print statistics
@@ -454,7 +605,7 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
 def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
                          cmap='RdBu_r', symmetric=False, shared_scale=False,
                          save_path=None, display=False, point_data_vars=None,
-                         center_zero=False):
+                         center_zero=False, orient_horizontal=True):
     """
     Plot multiple 2D slices in a single figure with subplots.
 
@@ -468,15 +619,22 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
         shared_scale: if True, use same color scale across all subplots
         save_path: path to save figure (None to skip saving)
         display: whether to display the figure
+        orient_horizontal: if True, put the widest in-plane dimension on the
+            horizontal axis (see orient_slice_horizontally)
     """
     import math
+
+    if orient_horizontal and needs_horizontal_swap(coord1, coord2):
+        slices_data = [(var_name, sdata.T) for var_name, sdata in slices_data]
+        coord1, coord2 = coord2, coord1
+        axis_labels = (axis_labels[1], axis_labels[0])
 
     n_vars = len(slices_data)
     nrows = min(n_vars, 3)
     ncols = math.ceil(n_vars / nrows)
 
     fig, axs = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows),
-                            constrained_layout=True)
+                            constrained_layout={'h_pad': 0.3, 'w_pad': 0.3})
 
     # Handle single subplot case
     if n_vars == 1:
@@ -579,10 +737,18 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
                 **color_kwargs
             )
 
-        fig.colorbar(pcm, ax=ax, label=var_name)
+        fig.colorbar(
+            pcm,
+            ax=ax,
+            label=variable_colorbar_label(var_name),
+            orientation='horizontal',
+            location='bottom',
+            pad=0.15,
+            shrink=0.5,
+        )
         ax.set_xlabel(axis_labels[0])
         ax.set_ylabel(axis_labels[1])
-        ax.set_title(f'{var_name}')
+        ax.set_title(f'{variable_label(var_name)}')
         ax.set_aspect('equal', adjustable='box')
 
     # Hide unused subplots
@@ -593,7 +759,7 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
     fig.suptitle(f'2D Slices {slice_info}', fontsize=12)
 
     if save_path:
-        fig.savefig(save_path, dpi=1000, bbox_inches='tight')
+        fig.savefig(save_path, dpi=1000, bbox_inches='tight', pad_inches=0.5)
         print(f"Saved: {save_path}")
 
     if display:

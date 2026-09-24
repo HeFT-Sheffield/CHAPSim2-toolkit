@@ -515,7 +515,11 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     # Variable lookup (prefixes already stripped by reader)
     # ------------------------------------------------------------------
     def get_var(name):
-        return xdmf_data_dict.get(name, None)
+        val = xdmf_data_dict.get(name, None)
+        if val is None:
+            print(f"WARNING: '{name}' is missing from the loaded data. "
+                  f"Terms computed from it will be zero")
+        return val
 
     # ------------------------------------------------------------------
     # Mean velocities and pressure
