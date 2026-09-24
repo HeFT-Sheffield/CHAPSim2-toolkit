@@ -73,7 +73,6 @@ norm_temp_by_ref_temp = False
 half_channel_plot = False
 linear_y_scale = True
 log_y_scale = False
-multi_plot = True
 display_fig = False
 save_fig = True
 save_to_path = True

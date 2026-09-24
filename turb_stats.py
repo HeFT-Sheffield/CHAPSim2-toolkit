@@ -83,7 +83,6 @@ class Config:
     half_channel_plot: bool
     linear_y_scale: bool
     log_y_scale: bool
-    multi_plot: bool
     display_fig: bool
     save_fig: bool
     save_to_path: bool
@@ -191,7 +190,6 @@ class Config:
             half_channel_plot=getattr(config_module, 'half_channel_plot', False),
             linear_y_scale=getattr(config_module, 'linear_y_scale', True),
             log_y_scale=getattr(config_module, 'log_y_scale', False),
-            multi_plot=getattr(config_module, 'multi_plot', True),
             display_fig=getattr(config_module, 'display_fig', False),
             save_fig=getattr(config_module, 'save_fig', True),
             save_to_path=getattr(config_module, 'save_to_path', False),
@@ -2500,13 +2498,6 @@ class TurbulencePlotter:
     # ------------------------------------------------------------------
     # Public entry points
     # ------------------------------------------------------------------
-    def plot(self, statistics: List[Union[ReStresses, Profiles, Budget]], reference_data: Optional[ReferenceData] = None):
-        """Main plotting method - delegates to single or multi plot"""
-        if len(statistics) == 1 or not self.config.multi_plot:
-            return self._plot_single_figure(statistics, reference_data)
-        else:
-            return self._plot_multi_figure(statistics, reference_data)
-
     def plot_by_class(self, grouped_statistics: Dict[str, List[Union[ReStresses, Profiles, Budget]]],
                       reference_data: Optional[ReferenceData] = None) -> Dict[str, Any]:
         """Create separate figures for each class type (ReStresses, Profiles, TkeBudget).
@@ -2873,121 +2864,6 @@ class TurbulencePlotter:
         if handles:
             ax.legend(fontsize=self._get_legend_fontsize())
         self._apply_axis_text_style(ax)
-
-        return fig
-
-    def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, Budget]],
-                           reference_data: Optional[ReferenceData] = None):
-        """Create a single combined plot for all statistics"""
-        self._reset_color_cycle()
-        fig = Figure(figsize=(10, 6))
-        ax = fig.add_subplot(111)
-
-        for stat in statistics:
-            for (case, timestep), values in stat.processed_results.items():
-
-                y_plus = self._get_y_plus(case, timestep)
-                if y_plus is None:
-                    continue
-
-                profiles = self._extract_profiles(values)
-                for suffix, profile in profiles:
-                    color = self._get_line_color(case, timestep, stat.name, suffix)
-                    label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
-                    linestyle = self._get_linestyle(case)
-                    marker = self._get_marker(case)
-                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
-
-                if reference_data:
-                    self._plot_reference_data(ax, stat.name, case, reference_data)
-
-                if stat.name == 'ux_velocity' and self.config.ux_velocity_log_ref_on and self.config.log_y_scale:
-                    self._plot_log_reference_lines(ax, y_plus)
-
-        ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
-
-        if len(statistics) == 1:
-            ax.set_ylabel(
-                self._get_stat_ylabel(statistics[0].name, statistics[0].label),
-                fontsize=self._get_axis_label_fontsize()
-            )
-        else:
-            if self.config.norm_by_u_tau_sq:
-                ax.set_ylabel('Statistic value / $u_\\tau^2$', fontsize=self._get_axis_label_fontsize())
-            else:
-                ax.set_ylabel('Statistic value', fontsize=self._get_axis_label_fontsize())
-
-        ax.legend(fontsize=self._get_legend_fontsize())
-        if self.config.large_text_on:
-            ax.tick_params(axis='x', labelsize=16)
-            ax.tick_params(axis='y', labelsize=16)
-        ax.grid(True)
-
-        return fig
-
-    def _plot_multi_figure(self, statistics: List[Union[ReStresses, Profiles, Budget]],
-                          reference_data: Optional[ReferenceData] = None):
-        """Create separate subplots for each statistic"""
-        self._reset_color_cycle()
-        n_stats = len(statistics)
-        ncols = math.ceil(math.sqrt(n_stats))
-        nrows = math.ceil(n_stats / ncols)
-
-        fig = Figure(figsize=(15, 10), constrained_layout=True)
-        axs = np.array(fig.subplots(nrows=nrows, ncols=ncols, squeeze=False))
-
-        # Plot each statistic
-        for i, stat in enumerate(statistics):
-            row = i // ncols
-            col = i % ncols
-            ax = axs[row, col]
-
-            for (case, timestep), values in stat.processed_results.items():
-
-                # Get y coordinates
-                y_plus = self._get_y_plus(case, timestep)
-                if y_plus is None:
-                    continue
-
-                profiles = self._extract_profiles(values)
-                for suffix, profile in profiles:
-                    # Get plotting aesthetics
-                    color = self._get_line_color(case, timestep, stat.name, suffix)
-                    label = self._build_legend_label(stat.label, case, timestep, suffix)
-                    linestyle = self._get_linestyle(case)
-                    marker = self._get_marker(case)
-
-                    # Plot main data
-                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
-
-                # Plot reference data
-                if reference_data:
-                    self._plot_reference_data(ax, stat.name, case, reference_data)
-
-                # Add log scale reference lines
-                if stat.name == 'ux_velocity' and self.config.ux_velocity_log_ref_on and self.config.log_y_scale:
-                    self._plot_log_reference_lines(ax, y_plus)
-
-            # Set subplot properties
-            ax.set_title(f'{stat.label}', fontsize=self._get_title_fontsize())
-            ax.set_ylabel(
-                self._get_stat_ylabel(stat.name, stat.label),
-                fontsize=self._get_axis_label_fontsize()
-            )
-            ax.grid(True)
-            handles, labels = ax.get_legend_handles_labels()
-            if handles:
-                ax.legend(fontsize=self._get_legend_fontsize())
-
-            if row == nrows - 1:
-                ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
-            self._apply_axis_text_style(ax)
-
-        # Hide unused subplots
-        for i in range(n_stats, nrows * ncols):
-            row = i // ncols
-            col = i % ncols
-            axs[row, col].set_visible(False)
 
         return fig
 

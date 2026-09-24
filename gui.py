@@ -29,25 +29,16 @@ import mesh_analysis as ma
 # =====================================================================================
 
 class ScrollableFrame(ttk.Frame):
-    """Vertically scrollable frame with mousewheel support.
-
-    """
+    """Vertically scrollable frame driven by the mousewheel only (no bar)."""
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
         self._canvas = ttk.Canvas(self, borderwidth=0, highlightthickness=0)
-        sb = ttk.Scrollbar(self, orient='vertical', command=self._canvas.yview)
         self.inner = ttk.Frame(self._canvas)
         self.inner.bind('<Configure>',
                         lambda e: self._canvas.configure(scrollregion=self._canvas.bbox('all')))
         self._canvas.create_window((0, 0), window=self.inner, anchor='nw')
-        self._canvas.configure(yscrollcommand=sb.set)
-        self._canvas.pack(side='left', fill='both', expand=True)
-        sb.pack(side='right', fill='y')
-        # Bound to the canvas, not `inner` — `inner` is only as wide as its
-        # content, so binding to it left a dead strip between the content's
-        # edge and the scrollbar (part of the canvas's visible area, but
-        # outside inner's bounding box) where wheel scrolling didn't work.
+        self._canvas.pack(fill='both', expand=True)
         self._canvas.bind('<Enter>', lambda e: self._bind_wheel())
         self._canvas.bind('<Leave>', lambda e: self._unbind_wheel())
         self._scroll_accum = 0
@@ -120,25 +111,24 @@ class FigurePanel(ttk.Frame):
 
 
 class TextRedirect:
-    """Redirect stdout/stderr to a ScrolledText widget, thread-safely."""
+    """Redirect stdout/stderr to a console widget, thread-safely.
+
+    ``widget`` may be a ConsolePanel (preferred: it can also update its
+    collapsed-state beacon) or a plain Text widget.
+    """
 
     def __init__(self, widget):
-        self._w = widget
+        self._target = widget
 
     def write(self, msg):
-        # Schedule all Tk operations on the main thread — never call Tk from a worker thread.
+        # Schedule all Tk operations on the main thread — never call Tk from a
+        # worker thread. Both ConsolePanel.write and _log_to satisfy this.
         try:
-            self._w.after(0, self._append, msg)
+            if isinstance(self._target, ConsolePanel):
+                self._target.after(0, self._target.write, msg)
+            else:
+                self._target.after(0, _log_to, self._target, msg, False)
         except Exception:
-            pass
-
-    def _append(self, msg):
-        try:
-            self._w.configure(state='normal')
-            self._w.insert(tk.END, msg)
-            self._w.see(tk.END)
-            self._w.configure(state='disabled')
-        except tk.TclError:
             pass
 
     def flush(self):
@@ -155,11 +145,147 @@ def _make_console(parent, height=7):
     return w
 
 
-def _log_to(widget, msg):
+def _log_to(widget, msg, newline=True):
+    """Append ``msg`` to a console text widget.
+
+    ``newline=False`` is used by TextRedirect so that partial writes from
+    ``print()`` are forwarded verbatim. A missing console (standalone use)
+    falls back to the real stdout rather than raising.
+    """
+    if widget is None:
+        print(msg)
+        return
     widget.configure(state='normal')
-    widget.insert(tk.END, msg + '\n')
+    widget.insert(tk.END, msg + ('\n' if newline else ''))
     widget.see(tk.END)
     widget.configure(state='disabled')
+
+
+class ConsolePanel(ttk.Frame):
+    """Collapsible console docked to the right edge of the main window.
+
+    Collapsed (the default) it is just a slim vertical strip, so it costs
+    almost no space. Clicking the strip expands a scrollable log over the
+    right-hand side, which is typically empty anyway.
+
+    The Text widget is created once and never destroyed, so a long-lived
+    ``sys.stdout`` redirect stays valid across open/close cycles.
+    """
+
+    OPEN_WIDTH = 420
+    STRIP_WIDTH = 26
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._open = False
+
+        # --- slim strip, always visible (the only collapsed footprint) ---
+        self._strip = ttk.Frame(self, width=self.STRIP_WIDTH)
+        self._strip.pack_propagate(False)
+        self._strip.pack(side='left', fill='y')
+        self._toggle = ttk.Button(self._strip, text='◀', width=2,
+                                  command=self.toggle)
+        self._toggle.pack(side='top', pady=(6, 2))
+        # Shows a dot when output arrives while the panel is collapsed, so
+        # background progress isn't silently missed.
+        self._beacon = ttk.Label(self._strip, text='', anchor='n')
+        self._beacon.pack(side='top')
+
+        # --- body, packed only while expanded ---
+        self._body = ttk.Frame(self, width=self.OPEN_WIDTH)
+        self._body.pack_propagate(False)
+
+        head = ttk.Frame(self._body)
+        head.pack(fill='x')
+        ttk.Label(head, text='Console').pack(side='left', padx=6, pady=3)
+        ttk.Button(head, text='▶', width=2,
+                   command=self.hide).pack(side='right', pady=3)
+        ttk.Button(head, text='Clear', width=7,
+                   command=self.clear).pack(side='right', padx=2, pady=3)
+
+        self.text = _make_console(self._body, height=10)
+        self.text.pack(fill='both', expand=True, padx=3, pady=(0, 4))
+
+    # -- visibility ---------------------------------------------------------- #
+
+    @property
+    def is_open(self):
+        return self._open
+
+    def toggle(self):
+        self.hide() if self._open else self.show()
+
+    def show(self):
+        if self._open:
+            return
+        self._body.pack(side='left', fill='both', expand=True)
+        self._toggle.configure(text='▶')
+        self._beacon.configure(text='')
+        self._open = True
+
+    def hide(self):
+        if not self._open:
+            return
+        self._body.pack_forget()
+        self._toggle.configure(text='◀')
+        self._open = False
+
+    # -- output -------------------------------------------------------------- #
+
+    def write(self, msg, newline=False):
+        """Append raw output (e.g. from print()) and flag if collapsed."""
+        _log_to(self.text, msg, newline)
+        if not self._open:
+            self._beacon.configure(text='●')
+
+    def clear(self):
+        self.text.configure(state='normal')
+        self.text.delete('1.0', tk.END)
+        self.text.configure(state='disabled')
+        self._beacon.configure(text='')
+
+
+def find_console(widget):
+    """Return the app-level ConsolePanel hosting ``widget``, or None.
+
+    Walks up the widget's master chain, so tabs work whether or not they are
+    embedded in an App that provides a console.
+    """
+    w = widget
+    while w is not None:
+        panel = getattr(w, 'console', None)
+        if isinstance(panel, ConsolePanel):
+            return panel
+        w = getattr(w, 'master', None)
+    return None
+
+
+class ConsoleConsumer:
+    """Mixin giving a tab access to the app-wide ConsolePanel.
+
+    Use as ``class SomeTab(ConsoleConsumer, ttk.Frame)`` and drop any local
+    console widget. When no ConsolePanel ancestor exists (standalone use),
+    output falls back to stdout.
+    """
+
+    @property
+    def _console(self):
+        """The shared console's Text widget, or None when standalone."""
+        panel = find_console(self)
+        return panel.text if panel is not None else None
+
+    def _log(self, msg):
+        panel = find_console(self)
+        if panel is None:
+            print(msg)
+            return
+        # Marshalled to the main thread: _log is called from worker threads.
+        self.after(0, panel.write, msg, True)
+
+    def _clear_console(self):
+        panel = find_console(self)
+        if panel is not None:
+            panel.clear()
 
 
 # =====================================================================================
@@ -250,7 +376,7 @@ def _mp_plot_avg(ax, t, d, label, color, window):
 # TURB STATS TAB
 # =====================================================================================
 
-class TurbStatsTab(ttk.Frame):
+class TurbStatsTab(ConsoleConsumer, ttk.Frame):
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -478,7 +604,6 @@ class TurbStatsTab(ttk.Frame):
              ['full channel', 'half channel', 'surface plot'])
         crow(s, 'Half channel side', sv('half_channel_side', 'lower'), ['lower', 'upper', 'average'])
         crow(s, 'Axis scale', sv('axis_scale', 'linear'), ['linear', 'log'])
-        chk(s, 'Multi-plot', bv('multi_plot', True))
         chk(s, 'Large text', bv('large_text_on', False))
 
         # ---- Reference Data ----
@@ -550,11 +675,6 @@ class TurbStatsTab(ttk.Frame):
         self.vars['thermo_on'].trace_add('write', _update_thermal_mhd_visibility)
         self.vars['mhd_on'].trace_add('write', _update_thermal_mhd_visibility)
         _update_thermal_mhd_visibility()
-
-        # ---- Console ----
-        ttk.Label(parent, text='Console output:').pack(anchor='w', padx=5)
-        self._console = _make_console(parent, height=7)
-        self._console.pack(fill='x', padx=5, pady=2)
 
     # ------ Plot panel (right) -------------------------------------------------------
 
@@ -669,7 +789,6 @@ class TurbStatsTab(ttk.Frame):
             half_channel_side=v['half_channel_side'].get(),
             linear_y_scale=v['axis_scale'].get() == 'linear',
             log_y_scale=v['axis_scale'].get() == 'log',
-            multi_plot=v['multi_plot'].get(),
             xdmf_data_type=v['xdmf_data_type'].get(),
             display_fig=False,          # always embedded; never plt.show()
             save_fig=True,
@@ -690,9 +809,7 @@ class TurbStatsTab(ttk.Frame):
     # ------ Run pipeline -------------------------------------------------------------
 
     def _run(self):
-        self._console.configure(state='normal')
-        self._console.delete('1.0', tk.END)
-        self._console.configure(state='disabled')
+        self._clear_console()
 
         try:
             config = self._build_config_obj()
@@ -701,10 +818,6 @@ class TurbStatsTab(ttk.Frame):
             return
 
         def worker():
-            old_out, old_err = sys.stdout, sys.stderr
-            redir = TextRedirect(self._console)
-            sys.stdout = redir
-            sys.stderr = redir
             try:
                 from turb_stats import (
                     create_data_loader, ReferenceData,
@@ -742,9 +855,6 @@ class TurbStatsTab(ttk.Frame):
                 print('Done.')
             except Exception:
                 traceback.print_exc()
-            finally:
-                sys.stdout = old_out
-                sys.stderr = old_err
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -795,7 +905,6 @@ class TurbStatsTab(ttk.Frame):
                 'Nusselt_number_on': False, 'turb_prandtl_on': False,
                 'norm_by_u_tau_sq': True, 'norm_ux_by_u_tau': True,
                 'norm_y_to_y_plus': False, 'norm_temp_by_ref_temp': False,
-                'multi_plot': True,
                 'large_text_on': False, 'ux_velocity_log_ref_on': True,
                 'mhd_NK_ref_on': False, 'mkm180_ch_ref_on': False,
             }
@@ -938,7 +1047,6 @@ class TurbStatsTab(ttk.Frame):
             f"half_channel_side = '{v['half_channel_side'].get()}'",
             f"linear_y_scale = {v['axis_scale'].get() == 'linear'}",
             f"log_y_scale = {v['axis_scale'].get() == 'log'}",
-            f"multi_plot = {v['multi_plot'].get()}",
             'display_fig = False',
             'save_fig = True',
             'save_to_path = True',
@@ -965,13 +1073,19 @@ COLORMAPS = ['RdBu_r', 'viridis', 'plasma', 'inferno', 'magma',
              'coolwarm', 'bwr', 'seismic', 'jet', 'turbo', 'gray']
 
 
-class SliceTab(ttk.Frame):
+class SliceTab(ConsoleConsumer, ttk.Frame):
 
     def __init__(self, parent):
         super().__init__(parent)
         self._var_meta = {}
         self._grid_info = {}
         self._current_fig = None
+        # Loaded arrays are kept alive between plots: they are already resident
+        # after a load, so retaining them costs no extra memory, and plotting
+        # options (cmap, vmin/vmax, crop, combined, ...) don't affect them.
+        # The key is the dataset identity — only these fields force a reload.
+        self._data = None
+        self._data_key = None
         self._build_ui()
 
     # ------ Layout -------------------------------------------------------------------
@@ -1137,15 +1251,7 @@ class SliceTab(ttk.Frame):
         ttk.Button(r5, text='Plot', command=self._plot).pack(side='left', padx=2)
         ttk.Button(r5, text='Save…', command=self._save_plot).pack(side='left', padx=2)
 
-        # Console
-        ttk.Label(f, text='Console:').pack(anchor='w', padx=4, pady=(6, 0))
-        self._console = _make_console(f, height=6)
-        self._console.pack(fill='x', padx=4, pady=2)
-
     # ------ Helpers ------------------------------------------------------------------
-
-    def _log(self, msg):
-        self.after(0, lambda: _log_to(self._console, msg))
 
     def _browse(self):
         d = filedialog.askdirectory(title='Select case folder (containing 2_visu/)')
@@ -1219,13 +1325,13 @@ class SliceTab(ttk.Frame):
             self._ts_combo['values'] = tss
             if tss:
                 self._ts.set(tss[0])
-            _log_to(self._console, f'Found {len(tss)} timestep(s): {", ".join(tss)}')
+            self._log(f'Found {len(tss)} timestep(s): {", ".join(tss)}')
         except Exception as exc:
-            _log_to(self._console, f'Scan error: {exc}')
+            self._log(f'Scan error: {exc}')
 
     def _load_vars(self):
         xdmf = self._xdmf_path()
-        _log_to(self._console, f'Reading metadata: {xdmf}')
+        self._log(f'Reading metadata: {xdmf}')
         try:
             from utils import parse_xdmf_metadata
             self._var_meta, self._grid_info = parse_xdmf_metadata(xdmf)
@@ -1233,13 +1339,13 @@ class SliceTab(ttk.Frame):
             self._var_lb.delete(0, tk.END)
             for n in names:
                 self._var_lb.insert(tk.END, n)
-            _log_to(self._console, f'Loaded {len(names)} variable(s).')
+            self._log(f'Loaded {len(names)} variable(s).')
             # Update index spin max
             gy = self._grid_info.get('grid_y')
             if gy is not None:
                 self._idx_spin.configure(to=len(gy) - 1)
         except Exception as exc:
-            _log_to(self._console, f'Error: {exc}\n{traceback.format_exc()}')
+            self._log(f'Error: {exc}\n{traceback.format_exc()}')
 
     def _update_coord_label(self, *_):
         if not self._grid_info:
@@ -1282,9 +1388,21 @@ class SliceTab(ttk.Frame):
                 load_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(sel)) if use_vort else sel
 
                 xdmf = self._xdmf_path()
-                self._log('Loading data…')
                 var_meta, grid = parse_xdmf_metadata(xdmf)
-                data = load_xdmf_variables(var_meta, load_vars, grid)
+
+                # Re-load only when the dataset identity changes. `data` is a
+                # shallow copy so the derived fields that apply_vorticity /
+                # apply_fluctuation write back cannot leak into the retained
+                # base across runs.
+                key = (xdmf, tuple(sorted(load_vars)))
+                if self._data is not None and key == self._data_key:
+                    self._log('Reusing loaded data (dataset unchanged).')
+                    data = dict(self._data)
+                else:
+                    self._log('Loading data…')
+                    data = load_xdmf_variables(var_meta, load_vars, grid)
+                    self._data = dict(data)
+                    self._data_key = key
 
                 plot_vars = sel
                 if use_vort:
@@ -1388,14 +1506,14 @@ class SliceTab(ttk.Frame):
         )
         if path:
             self._current_fig.savefig(path, dpi=300, bbox_inches='tight')
-            _log_to(self._console, f'Saved to {path}')
+            self._log(f'Saved to {path}')
 
 
 # =====================================================================================
 # MONITOR POINTS TAB
 # =====================================================================================
 
-class MonitorPointsTab(ttk.Frame):
+class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -1484,15 +1602,7 @@ class MonitorPointsTab(ttk.Frame):
         sb.pack(side='right', fill='y')
         self._fig_lb.bind('<<ListboxSelect>>', self._on_select)
 
-        # Console
-        ttk.Label(f, text='Console:').pack(anchor='w', padx=4, pady=(4, 0))
-        self._console = _make_console(f, height=6)
-        self._console.pack(fill='x', padx=4, pady=2)
-
     # ------ Helpers ------------------------------------------------------------------
-
-    def _log(self, msg):
-        self.after(0, lambda: _log_to(self._console, msg))
 
     def _on_select(self, _event=None):
         sel = self._fig_lb.curselection()
@@ -1510,9 +1620,7 @@ class MonitorPointsTab(ttk.Frame):
         if not path.endswith('/'):
             path += '/'
 
-        self._console.configure(state='normal')
-        self._console.delete('1.0', tk.END)
-        self._console.configure(state='disabled')
+        self._clear_console()
 
         n_pts = self._npts.get()
         thermo = self._thermo.get()
@@ -1898,13 +2006,17 @@ class Visu3DPanel(ttk.Frame):
             self._plotter.screenshot(filename=path)
 
 
-class TurbVisuTab(ttk.Frame):
+class TurbVisuTab(ConsoleConsumer, ttk.Frame):
     """3D visualisation tab — renders inside the GUI panel."""
 
     def __init__(self, parent):
         super().__init__(parent)
         self._var_meta = {}
         self._grid_info = {}
+        # Loaded arrays are kept alive between renders (see SliceTab.__init__).
+        # stride is part of the key because it is applied at read time.
+        self._data = None
+        self._data_key = None
         self._build_ui()
 
     # ------ Layout -------------------------------------------------------------------
@@ -1924,14 +2036,9 @@ class TurbVisuTab(ttk.Frame):
         self._build_right(right)
 
     def _build_right(self, parent):
-        """Right panel: embedded 3D render widget + console strip."""
+        """Right panel: embedded 3D render widget."""
         self._visu_panel = Visu3DPanel(parent)
         self._visu_panel.pack(fill='both', expand=True)
-
-        ttk.Label(parent, text='Console output:', anchor='w').pack(
-            fill='x', padx=4, pady=(4, 0))
-        self._console = _make_console(parent, height=6)
-        self._console.pack(fill='x', padx=4, pady=(0, 4))
 
     # ------ Controls (left) ----------------------------------------------------------
 
@@ -2092,9 +2199,6 @@ class TurbVisuTab(ttk.Frame):
 
     # ------ Helpers ------------------------------------------------------------------
 
-    def _log(self, msg):
-        self.after(0, lambda: _log_to(self._console, msg))
-
     def _browse(self):
         d = filedialog.askdirectory(title='Select case folder (containing 2_visu/)')
         if d:
@@ -2132,13 +2236,13 @@ class TurbVisuTab(ttk.Frame):
             self._ts_combo['values'] = tss
             if tss:
                 self._ts.set(tss[0])
-            _log_to(self._console, f'Found {len(tss)} timestep(s): {", ".join(tss)}')
+            self._log(f'Found {len(tss)} timestep(s): {", ".join(tss)}')
         except Exception as exc:
-            _log_to(self._console, f'Scan error: {exc}')
+            self._log(f'Scan error: {exc}')
 
     def _load_vars(self):
         xdmf = self._xdmf_path()
-        _log_to(self._console, f'Reading metadata: {xdmf}')
+        self._log(f'Reading metadata: {xdmf}')
         try:
             from utils import parse_xdmf_metadata
             self._var_meta, self._grid_info = parse_xdmf_metadata(xdmf)
@@ -2149,7 +2253,7 @@ class TurbVisuTab(ttk.Frame):
                 self._var_lb.insert(tk.END, n)
             self._color_by_combo['values'] = [
                 'same', 'q_criterion', 'vorticity', 'wall_distance'] + names
-            _log_to(self._console, f'Loaded {len(names)} 3D variable(s).')
+            self._log(f'Loaded {len(names)} 3D variable(s).')
 
             # Show domain range as hints for slice plane entries
             gi = self._grid_info
@@ -2157,11 +2261,11 @@ class TurbVisuTab(ttk.Frame):
                 arr = gi.get(key)
                 if arr is not None:
                     mid = 0.5 * (float(arr[0]) + float(arr[-1]))
-                    _log_to(self._console,
-                            f'  {axis} range: {arr[0]:.4f} – {arr[-1]:.4f}  (mid = {mid:.4f})')
+                    self._log(
+                        f'  {axis} range: {arr[0]:.4f} – {arr[-1]:.4f}  (mid = {mid:.4f})')
                     getattr(self, f'_cut_{axis}').set(f'{mid:.4f}')
         except Exception as exc:
-            _log_to(self._console, f'Error: {exc}\n{traceback.format_exc()}')
+            self._log(f'Error: {exc}\n{traceback.format_exc()}')
 
     def _selected_var(self):
         sel = self._var_lb.curselection()
@@ -2282,7 +2386,19 @@ class TurbVisuTab(ttk.Frame):
                 from utils import load_xdmf_variables, parse_xdmf_metadata
 
                 self._log(f'Loading {selected_vars}…')
-                data = load_xdmf_variables(var_meta, selected_vars, grid_info=gi, stride=stride)
+
+                # Re-load only when the dataset identity changes. `data` is a
+                # shallow copy so derived fields (Q-criterion, vorticity, wall
+                # distance, fluctuation) cannot leak into the retained base.
+                key = (self._xdmf_path(), tuple(sorted(selected_vars)), stride)
+                if self._data is not None and key == self._data_key:
+                    self._log('Reusing loaded data (dataset unchanged).')
+                    data = dict(self._data)
+                else:
+                    data = load_xdmf_variables(var_meta, selected_vars, grid_info=gi, stride=stride)
+                    if data:
+                        self._data = dict(data)
+                        self._data_key = key
                 if not data:
                     self._log('Error: failed to load data.')
                     return
@@ -2401,9 +2517,9 @@ class TurbVisuTab(ttk.Frame):
         path = self._screenshot_path.get().strip() or 'visu_screenshot.png'
         try:
             self._visu_panel.save_screenshot(path)
-            _log_to(self._console, f'Screenshot saved: {path}')
+            self._log(f'Screenshot saved: {path}')
         except Exception as exc:
-            _log_to(self._console, f'Screenshot error: {exc}')
+            self._log(f'Screenshot error: {exc}')
 
 
 class LinkedSlider(ttk.Frame):
@@ -3024,8 +3140,13 @@ class App(ttk.Window):
         self._build()
 
     def _build(self):
+        # Console drawer on the right: laid out before the notebook so the
+        # notebook's fill/expand yields the strip only the width it needs.
+        self.console = ConsolePanel(self)
+        self.console.pack(side='right', fill='y')
+
         nb = ttk.Notebook(self)
-        nb.pack(fill='both', expand=True)
+        nb.pack(side='left', fill='both', expand=True)
         self._nb = nb
         self._holders = []
 
@@ -3038,6 +3159,13 @@ class App(ttk.Window):
         # The event above may already have fired for the initial selection
         # while the binding was not yet in place, so realise it explicitly.
         self._realise_current()
+
+        # One app-wide redirect: TextRedirect marshals writes onto the Tk
+        # thread, so print() from worker threads (and from any tab's tools)
+        # lands in the console. Restored in _on_close.
+        self._stdout, self._stderr = sys.stdout, sys.stderr
+        sys.stdout = TextRedirect(self.console)
+        sys.stderr = TextRedirect(self.console)
 
     def _on_tab_changed(self, _event=None):
         self._realise_current()
@@ -3062,6 +3190,12 @@ class App(ttk.Window):
             self.configure(cursor='')
 
     def _on_close(self):
+        # Restore the real streams so late writes (and interpreter shutdown)
+        # don't target a destroyed widget.
+        try:
+            sys.stdout, sys.stderr = self._stdout, self._stderr
+        except AttributeError:
+            pass
         # The PyVista/VTK off-screen plotter holds a GL context that must be
         # closed explicitly while the display connection is still alive.
         # Without this, it's only finalized during uncontrolled interpreter
