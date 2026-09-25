@@ -51,6 +51,15 @@ u_prime_v_prime_on = False
 w_prime_sq_on = False
 v_prime_sq_on = False
 
+# Spanwise two-point velocity correlation (needs instantaneous 3D visu data)
+two_point_corr_on = False
+two_point_corr_components = 'uu' # pairs of u/v/w, e.g. 'uu' or 'uu,vv,ww,uv'
+two_point_corr_y_coords = '' # y coords for the R(dz) line plot, e.g. '-0.9,-0.5' (blank = no line plot)
+two_point_corr_x_coords = '' # x stations to correlate at (blank = mid-domain, or all x if average_x_direction)
+two_point_corr_max_sep = 0 # max separation in cells (0 = half the spanwise domain)
+two_point_corr_mean_mode = 't_avg' # 't_avg' (u' = u_inst - u_t_avg) or 'snapshot' (remove the snapshot's own z-mean)
+two_point_corr_symmetry_avg = True # fold about the centreline to double the sample (channels only)
+
 # Reynolds Stress Budget terms
 re_stress_budget_on = False
 re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components

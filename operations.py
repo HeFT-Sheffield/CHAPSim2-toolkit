@@ -328,11 +328,7 @@ def compute_peak_over_y(field, half=None):
     if half is not None:
         if half not in ('lower', 'upper', 'average'):
             raise ValueError("half must be 'lower', 'upper', 'average' or None.")
-        if half == 'average':
-            arr = symmetric_average(arr)
-        else:
-            half_len = arr.shape[0] - arr.shape[0] // 2
-            arr = np.flip(arr, axis=0)[:half_len] if half == 'upper' else arr[:half_len]
+        arr = apply_half_channel(arr, half, axis=0)
 
     return arr.max(axis=0)
 
@@ -1033,23 +1029,57 @@ def norm_y_to_y_plus(y, ux_data, Re_bulk, y_coords=None):
     u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
     return y * u_tau * Re_bulk
 
-def symmetric_average(arr):
-    """Average the first and second halves of the domain along axis 0.
+def symmetric_average(arr, axis=0):
+    """Average the first and second halves of the domain along `axis`.
 
-    Works for 1-D (ny,), 2-D (ny, nx), or 3-D (ny, nx, nz) arrays.
+    Works for 1-D (ny,), 2-D (ny, nx), or 3-D (ny, nx, nz) arrays. `axis`
+    selects the wall-normal axis: 0 for the (y, ...) layout the statistics
+    pipeline uses, 1 for the (separation, y, ...) layout of the two-point
+    correlations.
     """
-    n = arr.shape[0]
+    n = arr.shape[axis]
     half = n // 2
-    first = arr[:half]
-    second = np.flip(arr, axis=0)[:half]
+    head = [slice(None)] * arr.ndim
+    head[axis] = slice(None, half)
+    head = tuple(head)
+
+    first = arr[head]
+    second = np.flip(arr, axis=axis)[head]
     if n % 2 == 0:
         return (first + second) / 2
     else:
         symmetric_avg = (first + second) / 2
         mid_sl = [slice(None)] * arr.ndim
-        mid_sl[0] = slice(half, half + 1)
+        mid_sl[axis] = slice(half, half + 1)
         middle = arr[tuple(mid_sl)]
-        return np.concatenate((symmetric_avg, middle), axis=0)
+        return np.concatenate((symmetric_avg, middle), axis=axis)
+
+
+def apply_half_channel(arr, side, axis=0):
+    """Reduce an array to one half of the channel along the wall-normal `axis`.
+
+    `side` is the config's half_channel_side: 'lower' keeps the y=-1 half,
+    'upper' the y=+1 half (flipped, so it too is indexed outward from its own
+    wall and the two can be compared on one axis), and 'average' returns the
+    symmetric average of both. An odd number of wall-normal cells puts the
+    centreline row in both halves (half_len = n - n//2), matching the
+    profile-plotting convention. `side` of None returns `arr` unchanged.
+    """
+    if side is None:
+        return arr
+    if side not in ('lower', 'upper', 'average'):
+        raise ValueError("side must be 'lower', 'upper', 'average' or None.")
+
+    if side == 'average':
+        return symmetric_average(arr, axis=axis)
+
+    n = arr.shape[axis]
+    half_len = n - n // 2
+    head = [slice(None)] * arr.ndim
+    head[axis] = slice(None, half_len)
+    head = tuple(head)
+
+    return np.flip(arr, axis=axis)[head] if side == 'upper' else arr[head]
 
 def window_average(data_t1, data_t2, t1, t2, stat_start_timestep):
     stat_t2 = t2 - stat_start_timestep
@@ -1224,10 +1254,6 @@ def compute_lorentz_force(mag_field_direction, stuart_number, force_dict):
 #     return
 
 # =====================================================================================================================================================
-# Two-point Correlation
-# =====================================================================================================================================================
-
-# =====================================================================================================================================================
 # Quadrant Analysis
 # =====================================================================================================================================================
 
@@ -1267,6 +1293,136 @@ def compute_1d_spectrum(field, dx=1.0):
 
     k = 2 * np.pi * np.fft.rfftfreq(n, d=dx)
     return k, psd
+
+# =====================================================================================================================================================
+# Two-point correlation
+# =====================================================================================================================================================
+
+def compute_two_point_correlation_z(f1, f2, max_sep=None, periodic=True):
+    """Two-point correlation of two fluctuation fields, separated in z:
+
+        R(dz) = < f1(z) f2(z + dz) >_z
+
+    `f1` and `f2` are fluctuation fields with the mean already removed and z
+    as axis 0 -- (nz, ny, nx), (nz, ny) or (nz,) all work. The returned array
+    replaces that axis with separation: (max_sep, ...).
+
+    With periodic=True (a channel's spanwise direction) the separation wraps
+    around the domain, so every dz is averaged over all nz samples. Every
+    separation is then obtained at once from the FFT, since the correlation
+    and the cross-spectrum are a transform pair (Wiener-Khinchin) -- exact,
+    and O(nz log nz) instead of O(nz * max_sep). It is the same transform
+    that compute_1d_spectrum takes, so sum(E) == R(0) by construction.
+
+    With periodic=False only the pairs that fit inside the domain are used,
+    dividing by the (nz - dz) samples available. That is the right estimator
+    for a non-periodic direction, but its large-separation tail is noisy
+    because it averages over progressively fewer samples.
+
+    max_sep defaults to half the domain plus one point (nz//2 + 1); beyond
+    that a periodic correlation only mirrors itself.
+    """
+    a = np.asarray(f1, dtype=float)
+    b = np.asarray(f2, dtype=float)
+    if a.shape != b.shape:
+        raise ValueError(f'Fluctuation fields must have the same shape, got {a.shape} and {b.shape}.')
+
+    nz = a.shape[0]
+    max_sep = nz // 2 + 1 if max_sep is None else int(max_sep)
+    if not 1 <= max_sep <= nz:
+        raise ValueError(f'max_sep must be between 1 and nz={nz}, got {max_sep}.')
+
+    if periodic:
+        fft1 = np.fft.rfft(a, axis=0)
+        fft2 = np.fft.rfft(b, axis=0)
+        # R(dz) = IDFT[ conj(F(f1)) * F(f2) ] / nz -- the circular
+        # cross-correlation, i.e. f1 held fixed while f2 is shifted by +dz.
+        R = np.fft.irfft(np.conj(fft1) * fft2, n=nz, axis=0) / nz
+        return R[:max_sep]
+
+    R = np.empty((max_sep,) + a.shape[1:], dtype=float)
+    for sep in range(max_sep):
+        R[sep] = (a[:nz - sep] * b[sep:]).sum(axis=0) / (nz - sep)
+    return R
+
+
+def normalise_correlation(R, var1=None, var2=None):
+    """Normalise a two-point correlation to a correlation coefficient.
+
+    Given the two single-point variances var1 = <f1 f1> and var2 = <f2 f2>
+    (shaped like one separation plane of `R`), returns R/sqrt(var1*var2),
+    which is bounded by 1 for a cross-correlation too. Dividing an <u'v'>
+    correlation by its own zero-separation value instead -- the fallback
+    used when the variances are omitted, and exact for an autocorrelation,
+    where R(0) is the variance -- blows up wherever the shear stress passes
+    through zero, i.e. at the centreline.
+
+    Points with a vanishing denominator come back as NaN, so a plot leaves
+    them as gaps instead of drawing garbage.
+    """
+    R = np.asarray(R, dtype=float)
+    if var1 is None or var2 is None:
+        denom = np.asarray(R[0], dtype=float)
+    else:
+        denom = np.sqrt(np.asarray(var1, dtype=float) * np.asarray(var2, dtype=float))
+
+    out = np.full_like(R, np.nan)
+    np.divide(R, denom, out=out, where=(denom != 0.0))
+    return out
+
+
+def symmetry_average_correlation(R, n_wall_normal_comps, axis=1):
+    """Fold a correlation about the channel centreline to double the sample.
+
+    A channel is statistically symmetric about y = 0, and under that
+    reflection the wall-normal fluctuation changes sign (v' -> -v') while u'
+    and w' do not. So R_uu, R_vv and R_ww are even in y while R_uv is odd,
+    and averaging R with its y-mirror carrying the (-1)**n factor
+    (n = `n_wall_normal_comps`, how many of the pair are wall-normal) averages
+    two estimates of the same quantity rather than smoothing the profile.
+
+    Only valid for a channel symmetric about y = 0 -- not for a duct, or any
+    case with dissimilar walls (one-sided heating, for instance).
+    """
+    sign = (-1.0) ** int(n_wall_normal_comps)
+    R = np.asarray(R, dtype=float)
+    return 0.5 * (R + sign * np.flip(R, axis=axis))
+
+
+def compute_integral_length_scale(rho, sep_coords, cutoff='first_zero'):
+    """Integral length scale of a normalised two-point correlation:
+
+        L = integral of rho(dz) d(dz), from dz = 0 upward
+
+    `rho` has separation as axis 0, matching `sep_coords`; the result drops
+    that axis. With cutoff='first_zero' the integral stops at the first
+    non-positive point of rho, which is the usual practice -- past the first
+    zero crossing the correlation is mostly noise, and its negative tail
+    would otherwise cancel the physical part. Values from the crossing
+    onward are zeroed rather than dropped, so the last trapezium runs from
+    the final positive point down to zero at the crossing, placing the cut
+    within a fraction of a cell of the true crossing. cutoff='full'
+    integrates the whole range supplied.
+    """
+    rho = np.asarray(rho, dtype=float)
+    sep = np.asarray(sep_coords, dtype=float)
+    if rho.shape[0] != sep.shape[0]:
+        raise ValueError(f'rho has {rho.shape[0]} separations but sep_coords has {sep.shape[0]}.')
+    if cutoff not in ('first_zero', 'full'):
+        raise ValueError("cutoff must be 'first_zero' or 'full'.")
+
+    if cutoff == 'first_zero':
+        non_positive = rho <= 0.0
+        # argmax gives 0 both for 'crosses at the first point' and 'never
+        # crosses', so fall back to the full range where there is no crossing.
+        first_crossing = np.where(non_positive.any(axis=0),
+                                  np.argmax(non_positive, axis=0),
+                                  rho.shape[0])
+        sep_index = np.arange(rho.shape[0]).reshape((-1,) + (1,) * (rho.ndim - 1))
+        rho = np.where(sep_index < first_crossing, rho, 0.0)
+
+    return np.trapezoid(rho, sep, axis=0)
+
 
 # =====================================================================================================================================================
 # Q-Criterion

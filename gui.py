@@ -565,6 +565,15 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
         chk(s, 'Reynolds Stress Budget terms', bv('re_stress_budget_on', False))
         crow(s, 'Budget component', sv('re_stress_component', 'uu11'),
              ['total', 'uu11', 'uu12', 'uu22', 'uu33'])
+        chk(s, 'Spanwise two-point correlation (requires full 3D field)',
+            bv('two_point_corr_on', False))
+        erow(s, 'Correlation components', sv('two_point_corr_components', 'uu'))
+        erow(s, 'Correlation y coords', sv('two_point_corr_y_coords', ''))
+        erow(s, 'Correlation x stations', sv('two_point_corr_x_coords', ''))
+        erow(s, 'Correlation max. sep.', sv('two_point_corr_max_sep', '0'))
+        crow(s, 'Correlation mean', sv('two_point_corr_mean_mode', 't_avg'),
+             ['t_avg', 'snapshot'])
+        chk(s, 'Fold correlation about centreline', bv('two_point_corr_symmetry_avg', True))
         thermal_stats_section = sec('Thermal Statistics')
         s = thermal_stats_section
         chk(s, 'Wall Heat transfer coeff.', bv('heat_transf_coeff_on', False))
@@ -715,6 +724,12 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                     pass
         return result
 
+    def _parse_int(self, text, default=0):
+        try:
+            return int(float(str(text).strip()))
+        except (TypeError, ValueError):
+            return default
+
     def _build_config_obj(self):
         from turb_stats import Config
         v = self.vars
@@ -804,6 +819,13 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
             vorticity_component=v['vorticity_component'].get(),
             reynolds_anisotropy_on=v['reynolds_anisotropy_on'].get(),
             vorticity_anisotropy_on=v['vorticity_anisotropy_on'].get(),
+            two_point_corr_on=v['two_point_corr_on'].get(),
+            two_point_corr_components=v['two_point_corr_components'].get(),
+            two_point_corr_y_coords=v['two_point_corr_y_coords'].get(),
+            two_point_corr_x_coords=v['two_point_corr_x_coords'].get(),
+            two_point_corr_max_sep=self._parse_int(v['two_point_corr_max_sep'].get()),
+            two_point_corr_mean_mode=v['two_point_corr_mean_mode'].get(),
+            two_point_corr_symmetry_avg=v['two_point_corr_symmetry_avg'].get(),
         )
 
     # ------ Run pipeline -------------------------------------------------------------
@@ -848,6 +870,14 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 if spectrum_fig is not None:
                     figs['Spectrum'] = spectrum_fig
 
+                corr_fig = plotter.plot_two_point_correlation(pipeline.corr_computer)
+                if corr_fig is not None:
+                    figs['TwoPointCorrelation'] = corr_fig
+                length_scale_fig = plotter.plot_integral_length_scale(pipeline.corr_computer)
+                if length_scale_fig is not None:
+                    figs['IntegralLengthScale'] = length_scale_fig
+                figs.update(plotter.plot_two_point_correlation_contour(pipeline.corr_computer))
+
                 if config.save_fig and figs:
                     plotter.save_figures_by_class(figs)
 
@@ -887,6 +917,9 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 'slice_coords': '', 'x_crop': '', 'x_profile_y_coords': '',
                 're_stress_component': 'uu11', 'vorticity_component': 'z',
                 'half_channel_side': 'lower', 'mhd_NK_ref_case': 'Ha_6',
+                'two_point_corr_components': 'uu', 'two_point_corr_y_coords': '',
+                'two_point_corr_x_coords': '', 'two_point_corr_max_sep': 0,
+                'two_point_corr_mean_mode': 't_avg',
             }
             bool_fields = {
                 'thermo_on': False, 'mhd_on': False,
@@ -907,6 +940,7 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 'norm_y_to_y_plus': False, 'norm_temp_by_ref_temp': False,
                 'large_text_on': False, 'ux_velocity_log_ref_on': True,
                 'mhd_NK_ref_on': False, 'mkm180_ch_ref_on': False,
+                'two_point_corr_on': False, 'two_point_corr_symmetry_avg': True,
             }
             for name, default in str_fields.items():
                 if name in v:
@@ -1033,6 +1067,14 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
             '',
             f"re_stress_budget_on = {v['re_stress_budget_on'].get()}",
             f"re_stress_component = '{v['re_stress_component'].get()}'",
+            '',
+            f"two_point_corr_on = {v['two_point_corr_on'].get()}",
+            f"two_point_corr_components = '{v['two_point_corr_components'].get()}'",
+            f"two_point_corr_y_coords = '{v['two_point_corr_y_coords'].get()}'",
+            f"two_point_corr_x_coords = '{v['two_point_corr_x_coords'].get()}'",
+            f"two_point_corr_max_sep = {self._parse_int(v['two_point_corr_max_sep'].get())}",
+            f"two_point_corr_mean_mode = '{v['two_point_corr_mean_mode'].get()}'",
+            f"two_point_corr_symmetry_avg = {v['two_point_corr_symmetry_avg'].get()}",
             '',
             f"heat_transf_coeff_on = {v['heat_transf_coeff_on'].get()}",
             f"Nusselt_number_on = {v['Nusselt_number_on'].get()}",

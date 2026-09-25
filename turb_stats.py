@@ -139,6 +139,15 @@ class Config:
     spectrum_direction: str = 'z'
     spectrum_y_coords: str = ''
 
+    # Spanwise two-point velocity correlation — see TwoPointCorrelationComputer.
+    two_point_corr_on: bool = False
+    two_point_corr_components: str = 'uu'
+    two_point_corr_y_coords: str = ''
+    two_point_corr_x_coords: str = ''
+    two_point_corr_max_sep: int = 0          # 0 -> half the spanwise domain
+    two_point_corr_mean_mode: str = 't_avg'  # 't_avg' or 'snapshot'
+    two_point_corr_symmetry_avg: bool = True
+
     @classmethod
     def from_module(cls, config_module):
         """Create Config from imported config module"""
@@ -221,6 +230,13 @@ class Config:
             spectrum_on=getattr(config_module, 'spectrum_on', False),
             spectrum_direction=getattr(config_module, 'spectrum_direction', 'z'),
             spectrum_y_coords=getattr(config_module, 'spectrum_y_coords', ''),
+            two_point_corr_on=getattr(config_module, 'two_point_corr_on', False),
+            two_point_corr_components=getattr(config_module, 'two_point_corr_components', 'uu'),
+            two_point_corr_y_coords=getattr(config_module, 'two_point_corr_y_coords', ''),
+            two_point_corr_x_coords=getattr(config_module, 'two_point_corr_x_coords', ''),
+            two_point_corr_max_sep=getattr(config_module, 'two_point_corr_max_sep', 0),
+            two_point_corr_mean_mode=getattr(config_module, 'two_point_corr_mean_mode', 't_avg'),
+            two_point_corr_symmetry_avg=getattr(config_module, 'two_point_corr_symmetry_avg', True),
         )
 
 @dataclass
@@ -1935,6 +1951,352 @@ class SpectrumComputer:
         return True
 
 
+_TWO_POINT_CORR_VARS = {
+    # letter: (instantaneous XDMF name, t_avg XDMF name, label)
+    'u': ('qx_ccc', 't_avg_u1', "u'"),
+    'v': ('qy_ccc', 't_avg_u2', "v'"),
+    'w': ('qz_ccc', 't_avg_u3', "w'"),
+}
+
+
+class TwoPointCorrelationComputer:
+    """Spanwise (z) two-point correlation of velocity fluctuations:
+
+        R_ij(dz; y, x) = < u_i'(z, y, x) u_j'(z + dz, y, x) >_z
+
+    z is periodic in a channel, so the separation wraps around the domain and
+    every dz is averaged over all nz samples -- see
+    op.compute_two_point_correlation_z, which takes the whole separation range
+    in one FFT. That FFT is the transform pair of the spanwise spectrum
+    SpectrumComputer already produces (sum(E(k)) == R(0)), so the two are
+    consistent by construction.
+
+    Like SpectrumComputer, this needs the raw instantaneous field -- a
+    correlation *is* the spatial structure that t_avg/tsp_avg data has already
+    averaged away -- so it reads the instantaneous XDMF file itself instead of
+    going through the shared data_loader, and is kept out of
+    TurbulenceStatsPipeline.statistics because its results are dicts rather
+    than plain ndarrays (process_all's generic normalization assumes ndarrays).
+
+    Fluctuations are u' = u_inst - u_t_avg (mean_mode='t_avg'), the Reynolds
+    decomposition the reference implementation uses. The t_avg field is
+    z-averaged first: the same spanwise homogeneity the periodic correlation
+    already assumes, for nz times more samples in the mean. With
+    mean_mode='snapshot', or when no t_avg file exists, each snapshot's own
+    spanwise mean is removed instead.
+
+    Only the wall-normal direction is kept in full. x is inhomogeneous in a
+    developing flow, so the correlation is taken at selected x stations (all
+    of x, averaged, only when 'Average x direction' declares x homogeneous) --
+    which is also what keeps this affordable: the full (dz, y, x) correlation
+    of a real grid runs to hundreds of MB. x stations are chosen from the
+    file's own x-range; the config's x_crop does not apply here.
+
+    raw_results / processed_results:
+        {(case, timestep): {component: {'R', 'rho', 'L', 'var1', 'var2',
+                                        'sep', 'y', 'x', 'label'}}}
+    """
+
+    # x columns per FFT call: a real (nz, ny, nx) snapshot is ~1 GB and its
+    # transform another, so the separation is taken in slabs to bound the
+    # workspace rather than transforming every station at once.
+    _X_CHUNK = 128
+
+    def __init__(self, folder_path: str, components: str, y_coords_str: str,
+                 x_coords_str: str = '', timesteps: Optional[List[str]] = None,
+                 max_sep: int = 0, mean_mode: str = 't_avg', symmetry_avg: bool = True,
+                 half_channel_side: Optional[str] = None, average_x: bool = False):
+        self.folder_path = folder_path
+        self.components = self._parse_components(components)
+        self.y_coords = [float(s) for s in y_coords_str.replace(',', ' ').split() if s.strip()]
+        self.x_coords = [float(s) for s in x_coords_str.replace(',', ' ').split() if s.strip()]
+        self.timesteps = list(timesteps) if timesteps else []
+        self.max_sep = int(max_sep) if max_sep else None
+        self.mean_mode = mean_mode if mean_mode in ('t_avg', 'snapshot') else 't_avg'
+        self.symmetry_avg = symmetry_avg
+        self.half_channel_side = half_channel_side
+        self.average_x = average_x
+        self.raw_results: Dict[Tuple[str, str], Dict[str, Dict[str, np.ndarray]]] = {}
+        self.processed_results: Dict[Tuple[str, str], Dict[str, Dict[str, np.ndarray]]] = self.raw_results
+
+    # ------------------------------------------------------------------
+    # Setup helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_components(spec: str) -> List[str]:
+        """Parse a 'uu,uv' style component list into validated pairs."""
+        components: List[str] = []
+        for token in str(spec).replace(',', ' ').split():
+            token = token.strip().lower()
+            if len(token) == 2 and all(c in _TWO_POINT_CORR_VARS for c in token):
+                if token not in components:
+                    components.append(token)
+            else:
+                print(f"Two-point correlation: ignoring unrecognised component '{token}' "
+                      f"(expected two of u/v/w, e.g. 'uu' or 'uv').")
+        if not components:
+            print("Two-point correlation: no valid components given; defaulting to 'uu'.")
+            components = ['uu']
+        return components
+
+    def _half_side_for(self, comp: str) -> Optional[str]:
+        """Half-channel side to apply to one component's correlation."""
+        side = self.half_channel_side
+        if side == 'average' and comp.count('v') % 2:
+            # An odd number of wall-normal components makes the correlation
+            # antisymmetric about the centreline, so averaging the two halves
+            # cancels it -- the same exclusion process_all makes for u'v'.
+            print(f"Two-point correlation: '{comp}' is antisymmetric about the centreline, so the "
+                  f"'average' half-channel side would cancel it; using the lower half instead.")
+            return 'lower'
+        return side
+
+    @staticmethod
+    def _y_for_side(y_cell: np.ndarray, side: Optional[str]) -> np.ndarray:
+        """Wall-normal coordinates matching a half-channel reduced correlation.
+
+        Same convention as TurbulencePlotter._get_y_plus: distance from the
+        selected wall, 0 at the wall and increasing toward the centreline, so
+        'lower' and 'upper' land on a common axis. 'average' is indexed from
+        the lower wall, matching op.symmetric_average's output.
+        """
+        if side is None:
+            return y_cell.copy()
+        half_len = len(y_cell) - len(y_cell) // 2
+        y = np.flip(y_cell)[:half_len] if side == 'upper' else y_cell[:half_len]
+        return (1.0 - y) if side == 'upper' else (y + 1.0)
+
+    def _select_x(self, x_cell: np.ndarray, nx: int):
+        """Choose the x stations to correlate at: (indices, coordinates, mode)."""
+        x_cell = x_cell[:nx]
+        if self.x_coords:
+            indices = np.array([int(np.argmin(np.abs(x_cell - v))) for v in self.x_coords])
+            return indices, x_cell[indices], 'stations'
+        if self.average_x:
+            return np.arange(nx), np.array([float(x_cell.mean())]), 'average'
+        mid = nx // 2
+        print(f"Two-point correlation: no x stations given; using the mid-domain station "
+              f"x={float(x_cell[mid]):.4g}. x is inhomogeneous in a developing flow, so no "
+              f"x-average is taken unless 'Average x direction' is enabled.")
+        return np.array([mid]), x_cell[[mid]], 'mid'
+
+    # ------------------------------------------------------------------
+    # Computation
+    # ------------------------------------------------------------------
+    def compute_for_case(self, case: str, timestep: str, data_loader=None) -> bool:
+        # average_over_timesteps collapses the loader's timestep list to
+        # 'avg'; there is no 'avg' file to open, so accumulate a running mean
+        # over the real timesteps here instead.
+        if timestep == 'avg':
+            result = self._accumulate_over_timesteps(case)
+        else:
+            result = self._correlate_snapshot(case, timestep)
+
+        if result is None:
+            return False
+        self.raw_results[(case, timestep)] = self._finalise(result)
+        return True
+
+    def _accumulate_over_timesteps(self, case: str):
+        """Running mean of the correlation over every configured timestep.
+
+        Incremental (R*i/(i+1) + R_new/(i+1)) so only one snapshot's
+        correlation is ever held at once, as in the reference implementation.
+        """
+        accumulated = None
+        n_used = 0
+        for timestep in self.timesteps:
+            single = self._correlate_snapshot(case, timestep)
+            if single is None:
+                continue
+            if accumulated is None:
+                accumulated, n_used = single, 1
+                continue
+            if not self._merge(accumulated, single, n_used / (n_used + 1.0), 1.0 / (n_used + 1.0)):
+                return None
+            n_used += 1
+
+        if accumulated is None:
+            print(f'Two-point correlation: no usable timesteps for {case}')
+            return None
+        print(f'Two-point correlation: averaged {n_used} snapshot(s) for {case}')
+        return accumulated
+
+    @staticmethod
+    def _merge(accumulated, single, weight_old: float, weight_new: float) -> bool:
+        """Blend one snapshot into the running mean, in place."""
+        for comp, data in accumulated.items():
+            if comp not in single:
+                print(f"Two-point correlation: component '{comp}' missing from a later "
+                      f"snapshot; cannot average over timesteps.")
+                return False
+            for field in ('R', 'var1', 'var2'):
+                if data[field].shape != single[comp][field].shape:
+                    print(f"Two-point correlation: '{comp}' changed shape between timesteps "
+                          f"({data[field].shape} vs {single[comp][field].shape}); "
+                          f"cannot average over timesteps.")
+                    return False
+                data[field] = data[field] * weight_old + single[comp][field] * weight_new
+        return True
+
+    def _correlate_snapshot(self, case: str, timestep: str):
+        """Correlate one instantaneous snapshot; returns unnormalised results."""
+        file_paths = ut.visu_file_paths(self.folder_path, case, timestep)
+        inst_xdmf, t_avg_xdmf = file_paths[0], file_paths[1]
+        if not os.path.isfile(inst_xdmf):
+            print(f"Missing instantaneous flow file for the two-point correlation: {case}, {timestep}\n"
+                  f"  Looked for: {inst_xdmf}")
+            return None
+
+        var_meta, grid_info = ut.parse_xdmf_metadata(inst_xdmf)
+        y_nodes, x_nodes, z_nodes = (grid_info.get('grid_y'),
+                                     grid_info.get('grid_x'),
+                                     grid_info.get('grid_z'))
+        if y_nodes is None or x_nodes is None or z_nodes is None:
+            print(f"Missing grid coordinates for the two-point correlation: {case}, {timestep}")
+            return None
+        y_cell = 0.5 * (y_nodes[:-1] + y_nodes[1:])
+        x_cell = 0.5 * (x_nodes[:-1] + x_nodes[1:])
+        z_cell = 0.5 * (z_nodes[:-1] + z_nodes[1:])
+
+        letters = sorted({c for comp in self.components for c in comp})
+        inst_names = [_TWO_POINT_CORR_VARS[c][0] for c in letters]
+        data = ut.load_xdmf_variables(var_meta, inst_names, grid_info=grid_info)
+
+        missing = [name for name in inst_names if name not in data]
+        if missing:
+            print(f"Failed to load {', '.join(missing)} for the two-point correlation: {case}, {timestep}")
+            return None
+        if any(data[name].ndim != 3 for name in inst_names):
+            print("The two-point correlation needs the full 3D instantaneous field (a 2D slice has "
+                  "no spanwise extent to correlate over); skipping.")
+            return None
+
+        nz, ny, nx = data[inst_names[0]].shape
+        if len(z_cell) < nz or len(y_cell) < ny or len(x_cell) < nx:
+            print(f"Grid coordinates ({len(z_cell)}, {len(y_cell)}, {len(x_cell)}) are smaller than the "
+                  f"field {(nz, ny, nx)} for the two-point correlation: {case}, {timestep}")
+            return None
+
+        max_sep = nz // 2 + 1 if self.max_sep is None else min(self.max_sep, nz)
+        if self.max_sep is not None and self.max_sep > nz:
+            print(f'Two-point correlation: max separation {self.max_sep} exceeds nz={nz}; using {max_sep}.')
+
+        x_indices, x_values, x_mode = self._select_x(x_cell, nx)
+        means = self._load_means(t_avg_xdmf, letters, ny, nx)
+        sep = z_cell[:max_sep] - z_cell[0]
+
+        results = {}
+        for comp in self.components:
+            R, var1, var2 = self._correlate_component(comp, data, means, x_indices,
+                                                      max_sep, x_mode == 'average')
+            if self.symmetry_avg:
+                # var1/var2 are single-point variances: even in y whatever the
+                # component, so they fold with a + sign (n = 0).
+                R = op.symmetry_average_correlation(R, comp.count('v'), axis=1)
+                var1 = op.symmetry_average_correlation(var1, 0, axis=0)
+                var2 = op.symmetry_average_correlation(var2, 0, axis=0)
+
+            side = self._half_side_for(comp)
+            results[comp] = {
+                'R': op.apply_half_channel(R, side, axis=1),
+                'var1': op.apply_half_channel(var1, side, axis=0),
+                'var2': op.apply_half_channel(var2, side, axis=0),
+                'sep': sep,
+                'y': self._y_for_side(y_cell[:ny], side),
+                'x': x_values,
+                'label': f'$R_{{{comp}}}$',
+            }
+
+        mean_source = 't_avg field' if means is not None else 'each snapshot'
+        station_text = ('x-averaged over the whole domain' if x_mode == 'average'
+                        else f'{len(x_values)} x station(s)')
+        print(f"Two-point correlation ({case}, t={timestep}): {', '.join(self.components)}; "
+              f"separations up to {float(sep[-1]):.4g} ({max_sep} points); {station_text}; "
+              f"mean removed from {mean_source}")
+
+        data.clear()  # release the snapshot's multi-GB arrays before the next one
+        return results
+
+    def _load_means(self, t_avg_xdmf: str, letters: List[str], ny: int, nx: int):
+        """Load the z-averaged time-mean velocities, or None to use the snapshot's own mean."""
+        if self.mean_mode != 't_avg':
+            return None
+        if not os.path.isfile(t_avg_xdmf):
+            print(f"  No t_avg file at {t_avg_xdmf}; removing each snapshot's own spanwise mean instead.")
+            return None
+
+        var_meta, grid_info = ut.parse_xdmf_metadata(t_avg_xdmf)
+        names = {c: _TWO_POINT_CORR_VARS[c][1] for c in letters}
+        loaded = ut.load_xdmf_variables(var_meta, list(names.values()),
+                                        grid_info=grid_info, average_z=True)
+
+        means = {}
+        for letter, name in names.items():
+            array = loaded.get(name)
+            if array is None or array.shape != (ny, nx):
+                shape = None if array is None else array.shape
+                print(f"  t_avg field '{name}' missing or shaped {shape} (expected {(ny, nx)}); "
+                      f"removing each snapshot's own spanwise mean instead.")
+                return None
+            means[letter] = array
+        return means
+
+    def _correlate_component(self, comp: str, data: Dict[str, np.ndarray], means,
+                             x_indices: np.ndarray, max_sep: int, average_x: bool):
+        """Correlate one component pair, in slabs of x columns."""
+        name1 = _TWO_POINT_CORR_VARS[comp[0]][0]
+        name2 = _TWO_POINT_CORR_VARS[comp[1]][0]
+
+        R_parts, var1_parts, var2_parts = [], [], []
+        R_sum = var1_sum = var2_sum = None
+
+        for start in range(0, len(x_indices), self._X_CHUNK):
+            block_indices = x_indices[start:start + self._X_CHUNK]
+            fluct1 = self._fluct_block(data[name1], means, comp[0], block_indices)
+            fluct2 = (fluct1 if comp[1] == comp[0]
+                      else self._fluct_block(data[name2], means, comp[1], block_indices))
+
+            R = op.compute_two_point_correlation_z(fluct1, fluct2, max_sep=max_sep, periodic=True)
+            var1 = (fluct1 * fluct1).mean(axis=0)
+            var2 = var1 if fluct2 is fluct1 else (fluct2 * fluct2).mean(axis=0)
+
+            if average_x:
+                # Accumulate sums over x rather than keeping every station's
+                # correlation: the full (max_sep, ny, nx) array is needlessly
+                # large when only its x-average is wanted.
+                R_sum = R.sum(axis=2) if R_sum is None else R_sum + R.sum(axis=2)
+                var1_sum = var1.sum(axis=1) if var1_sum is None else var1_sum + var1.sum(axis=1)
+                var2_sum = var2.sum(axis=1) if var2_sum is None else var2_sum + var2.sum(axis=1)
+            else:
+                R_parts.append(R)
+                var1_parts.append(var1)
+                var2_parts.append(var2)
+
+        if average_x:
+            n_x = len(x_indices)
+            return (R_sum[:, :, None] / n_x, var1_sum[:, None] / n_x, var2_sum[:, None] / n_x)
+        return (np.concatenate(R_parts, axis=2),
+                np.concatenate(var1_parts, axis=1),
+                np.concatenate(var2_parts, axis=1))
+
+    @staticmethod
+    def _fluct_block(field: np.ndarray, means, letter: str, x_indices: np.ndarray) -> np.ndarray:
+        """Fluctuation field for one slab of x columns."""
+        block = field[:, :, x_indices]
+        if means is not None:
+            return op.compute_inst_fluc(block, means[letter][:, x_indices][None, :, :])
+        return block - block.mean(axis=0, keepdims=True)
+
+    @staticmethod
+    def _finalise(result):
+        """Normalise to a correlation coefficient and integrate for a length scale."""
+        for data in result.values():
+            data['rho'] = op.normalise_correlation(data['R'], data['var1'], data['var2'])
+            data['L'] = op.compute_integral_length_scale(data['rho'], data['sep'])
+        return result
+
+
 # =====================================================================================================================================================
 # PIPELINE CLASS
 # =====================================================================================================================================================
@@ -2077,6 +2439,23 @@ class TurbulenceStatsPipeline:
                 self.config.spectrum_y_coords,
             )
 
+        # Also kept out of self.statistics — see TwoPointCorrelationComputer.
+        self.corr_computer = None
+        if self.config.two_point_corr_on:
+            self.corr_computer = TwoPointCorrelationComputer(
+                self.config.folder_path,
+                self.config.two_point_corr_components,
+                self.config.two_point_corr_y_coords,
+                self.config.two_point_corr_x_coords,
+                timesteps=self.config.timesteps,
+                max_sep=self.config.two_point_corr_max_sep,
+                mean_mode=self.config.two_point_corr_mean_mode,
+                symmetry_avg=self.config.two_point_corr_symmetry_avg,
+                half_channel_side=(self.config.half_channel_side
+                                   if self.config.half_channel_plot else None),
+                average_x=self.config.average_x_direction,
+            )
+
     def compute_all(self) -> None:
         """Compute all registered statistics for all cases and timesteps"""
         # Use the loader's timestep list — it may have been updated (e.g. to ['avg'])
@@ -2096,6 +2475,7 @@ class TurbulenceStatsPipeline:
         total_tasks += len(self.config.cases) * len(timesteps) if n_force else 0
         total_tasks += len(self.config.cases) * len(timesteps) if n_anisotropy else 0
         total_tasks += len(self.config.cases) * len(timesteps) if self.spectrum_computer else 0
+        total_tasks += len(self.config.cases) * len(timesteps) if self.corr_computer else 0
 
         with tqdm(total=total_tasks, desc="Computing statistics", unit="stat") as pbar:
             # Regular stats
@@ -2131,6 +2511,13 @@ class TurbulenceStatsPipeline:
                 for case in self.config.cases:
                     for timestep in timesteps:
                         self.spectrum_computer.compute_for_case(case, timestep, self.data_loader)
+                        pbar.update(1)
+
+            # Two-point correlation: one call per case/timestep covers all components
+            if self.corr_computer:
+                for case in self.config.cases:
+                    for timestep in timesteps:
+                        self.corr_computer.compute_for_case(case, timestep, self.data_loader)
                         pbar.update(1)
 
     def process_all(self) -> None:
@@ -2868,6 +3255,132 @@ class TurbulencePlotter:
         return fig
 
     # ------------------------------------------------------------------
+    # Two-point correlation plotting
+    # ------------------------------------------------------------------
+    def _corr_y_axis_label(self) -> str:
+        """Label for the wall-normal axis of a two-point correlation figure."""
+        return 'Distance from wall' if self.config.half_channel_plot else '$y$'
+
+    def plot_two_point_correlation(self, corr_computer):
+        """Spanwise two-point correlation coefficient against separation, one
+        curve per (case, timestep, component, y-location, x-station).
+
+        Like plot_spectrum this sits outside plot_by_class's grouped-statistics
+        machinery (see TwoPointCorrelationComputer's docstring) and is called
+        directly by main()/the GUI worker.
+        """
+        if corr_computer is None or not corr_computer.processed_results:
+            return None
+        if not corr_computer.y_coords:
+            print('Two-point correlation: no y-locations specified, so no line plot '
+                  '(the contour and length-scale figures cover every y).')
+            return None
+
+        self._reset_color_cycle()
+        fig = Figure(figsize=(8, 6), constrained_layout=True)
+        ax = fig.add_subplot(111)
+
+        for (case, timestep), by_comp in corr_computer.processed_results.items():
+            for comp, data in by_comp.items():
+                y_values = data['y']
+                for y_target in corr_computer.y_coords:
+                    y_index = int(np.argmin(np.abs(y_values - y_target)))
+                    for x_index, x_value in enumerate(data['x']):
+                        suffix = f" {comp} y={float(y_values[y_index]):.3g} x={float(x_value):.3g}"
+                        label = self._build_legend_label('two-point corr.', case, timestep, suffix)
+                        color = self._get_color(f'{case}|{timestep}|{comp}|{y_index}|{x_index}',
+                                                'two_point_corr')
+                        ax.plot(data['sep'], data['rho'][:, y_index, x_index],
+                                label=label, color=color, linestyle=self._get_linestyle(case))
+
+        ax.axhline(0.0, color='black', linewidth=0.8, alpha=0.5)
+        ax.set_title('Spanwise Two-Point Velocity Correlation', fontsize=self._get_title_fontsize())
+        ax.set_xlabel('$\\Delta z$', fontsize=self._get_axis_label_fontsize())
+        ax.set_ylabel('$\\rho$', fontsize=self._get_axis_label_fontsize())
+        ax.grid(True)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(fontsize=self._get_legend_fontsize())
+        self._apply_axis_text_style(ax)
+
+        return fig
+
+    def plot_two_point_correlation_contour(self, corr_computer) -> Dict[str, Any]:
+        """Filled contours of the correlation coefficient over (separation, y),
+        one figure per case/timestep/component/x-station.
+
+        Returns a ``{key: fig}`` dict, as _plot_surface_figures does, since a
+        contour map cannot share axes between series the way a line plot can.
+        """
+        if corr_computer is None or not corr_computer.processed_results:
+            return {}
+
+        figures: Dict[str, Any] = {}
+        for (case, timestep), by_comp in corr_computer.processed_results.items():
+            for comp, data in by_comp.items():
+                for x_index, x_value in enumerate(data['x']):
+                    rho = data['rho'][:, :, x_index]
+                    if rho.shape[1] < 2 or np.all(np.isnan(rho)):
+                        continue
+
+                    X, Y = np.meshgrid(data['sep'], data['y'])
+                    fig = Figure(figsize=(9, 5), constrained_layout=True)
+                    ax = fig.add_subplot(111)
+                    # Symmetric limits about 0 so the diverging colormap puts
+                    # white on the zero-correlation contour.
+                    limit = float(np.nanmax(np.abs(rho))) or 1.0
+                    contour = ax.contourf(X, Y, rho.T, levels=64, cmap='RdBu_r',
+                                          vmin=-limit, vmax=limit)
+                    cbar = fig.colorbar(contour, ax=ax)
+                    cbar.set_label(f"$\\rho_{{{comp}}}$", fontsize=self._get_axis_label_fontsize())
+                    if self.config.large_text_on:
+                        cbar.ax.tick_params(labelsize=13)
+                    ax.set_xlabel('$\\Delta z$', fontsize=self._get_axis_label_fontsize())
+                    ax.set_ylabel(self._corr_y_axis_label(), fontsize=self._get_axis_label_fontsize())
+                    ax.set_title(f"{data['label']} ({case}, t={timestep}, x={float(x_value):.3g})",
+                                 fontsize=self._get_title_fontsize())
+                    self._apply_axis_text_style(ax)
+
+                    figures[f'two_point_corr_{comp}_{case}_{timestep}_x{x_index}'] = fig
+
+        return figures
+
+    def plot_integral_length_scale(self, corr_computer):
+        """Spanwise integral length scale against the wall-normal coordinate,
+        one curve per (case, timestep, component, x-station).
+
+        L is the integral of the correlation coefficient up to its first zero
+        crossing, i.e. the width of the correlated spanwise structure — the
+        main scalar output of the correlation.
+        """
+        if corr_computer is None or not corr_computer.processed_results:
+            return None
+
+        self._reset_color_cycle()
+        fig = Figure(figsize=(8, 6), constrained_layout=True)
+        ax = fig.add_subplot(111)
+
+        for (case, timestep), by_comp in corr_computer.processed_results.items():
+            for comp, data in by_comp.items():
+                for x_index, x_value in enumerate(data['x']):
+                    suffix = f" {comp} x={float(x_value):.3g}"
+                    label = self._build_legend_label('integral scale', case, timestep, suffix)
+                    color = self._get_color(f'{case}|{timestep}|{comp}|L|{x_index}', 'two_point_corr')
+                    ax.plot(data['y'], data['L'][:, x_index], label=label, color=color,
+                            linestyle=self._get_linestyle(case))
+
+        ax.set_title('Spanwise Integral Length Scale', fontsize=self._get_title_fontsize())
+        ax.set_xlabel(self._corr_y_axis_label(), fontsize=self._get_axis_label_fontsize())
+        ax.set_ylabel('$L_z$', fontsize=self._get_axis_label_fontsize())
+        ax.grid(True)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(fontsize=self._get_legend_fontsize())
+        self._apply_axis_text_style(ax)
+
+        return fig
+
+    # ------------------------------------------------------------------
     # 2-D surface (contour) plotting
     # ------------------------------------------------------------------
     def _plot_surface_figures(self, statistics, title: str) -> Dict[str, Any]:
@@ -3268,6 +3781,15 @@ def main():
         spectrum_fig = plotter.plot_spectrum(pipeline.spectrum_computer)
         if spectrum_fig is not None:
             figures['Spectrum'] = spectrum_fig
+
+        # Two-point correlation: likewise separate (see its computer's docstring).
+        corr_fig = plotter.plot_two_point_correlation(pipeline.corr_computer)
+        if corr_fig is not None:
+            figures['TwoPointCorrelation'] = corr_fig
+        length_scale_fig = plotter.plot_integral_length_scale(pipeline.corr_computer)
+        if length_scale_fig is not None:
+            figures['IntegralLengthScale'] = length_scale_fig
+        figures.update(plotter.plot_two_point_correlation_contour(pipeline.corr_computer))
 
         if config.save_fig:
             if figures:
