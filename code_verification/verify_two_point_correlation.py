@@ -20,6 +20,8 @@ whose correlations are known exactly:
 so every number below has an analytic target rather than a reference dataset.
 """
 
+import contextlib
+import io
 import shutil
 import sys
 import tempfile
@@ -94,8 +96,15 @@ def _write_xdmf(path, grid_name, nodes, attributes):
 """)
 
 
-def build_case(root, with_t_avg=True):
-    """Write the synthetic case and return its exact fields for comparison."""
+def build_case(root, with_t_avg=True, t_avg_letters=('u1', 'u2'), with_tsp_avg=False,
+               asymmetric=False, t_avg_offset=0.0):
+    """Write the synthetic case and return its exact fields for comparison.
+
+    t_avg_letters picks which mean velocities the t_avg file holds, with_tsp_avg
+    adds a spanwise-averaged (zi1) file holding u1 only, asymmetric makes the
+    u' amplitude differ between the lower and upper walls, and t_avg_offset
+    shifts the t_avg means away from the snapshot's own spanwise mean.
+    """
     visu = root / CASE / '2_visu'
     data = root / CASE / '1_data'
     visu.mkdir(parents=True)
@@ -117,6 +126,9 @@ def build_case(root, with_t_avg=True):
     amp_v = 0.4 + 0.2 * y_cell[:, None] ** 2 + 0.05 * x_cell[None, :]
     mean_u = 10.0 * (1.0 - y_cell ** 2)[:, None] + x_cell[None, :]
     mean_v = -3.0 + 0.5 * y_cell[:, None] - 0.2 * x_cell[None, :]
+    if asymmetric:
+        # Like a one-side-heated channel: the upper wall's turbulence is much weaker.
+        amp_u = amp_u * (1.0 - 0.8 * y_cell[:, None])
 
     wave = np.cos(K * z_cell)[:, None, None]
     wave_shift = np.cos(K * z_cell + PHI)[:, None, None]
@@ -130,14 +142,20 @@ def build_case(root, with_t_avg=True):
                  _attribute_xml('qy_ccc', f'domain1_qy_ccc_{TIMESTEP}.bin', (NZ, NY, NX))])
 
     if with_t_avg:
-        _write_bin(data / f'domain1_t_avg_u1_{TIMESTEP}.bin',
-                   np.broadcast_to(mean_u[None, :, :], (NZ, NY, NX)))
-        _write_bin(data / f'domain1_t_avg_u2_{TIMESTEP}.bin',
-                   np.broadcast_to(mean_v[None, :, :], (NZ, NY, NX)))
+        means = {'u1': mean_u, 'u2': mean_v}
+        for name in t_avg_letters:
+            _write_bin(data / f'domain1_t_avg_{name}_{TIMESTEP}.bin',
+                       np.broadcast_to(means[name][None, :, :] + t_avg_offset, (NZ, NY, NX)))
         _write_xdmf(visu / f'domain1_t_avg_flow_{TIMESTEP}.xdmf', 't_avg_flow',
                     (NZ + 1, NY + 1, NX + 1),
-                    [_attribute_xml('t_avg_u1', f'domain1_t_avg_u1_{TIMESTEP}.bin', (NZ, NY, NX)),
-                     _attribute_xml('t_avg_u2', f'domain1_t_avg_u2_{TIMESTEP}.bin', (NZ, NY, NX))])
+                    [_attribute_xml(f't_avg_{name}', f'domain1_t_avg_{name}_{TIMESTEP}.bin', (NZ, NY, NX))
+                     for name in t_avg_letters])
+
+    if with_tsp_avg:
+        _write_bin(data / f'domain1_tsp_avg_u1_zi1_{TIMESTEP}.bin', mean_u[None, :, :])
+        _write_xdmf(visu / f'domain1_tsp_avg_flow_zi1_{TIMESTEP}.xdmf', 'tsp_avg_flow',
+                    (2, NY + 1, NX + 1),
+                    [_attribute_xml('tsp_avg_u1', f'domain1_tsp_avg_u1_zi1_{TIMESTEP}.bin', (1, NY, NX))])
 
     return dict(y_cell=y_cell, x_cell=x_cell, z_cell=z_cell,
                 amp_u=amp_u, amp_v=amp_v, u_inst=u_inst, v_inst=v_inst)
@@ -146,12 +164,20 @@ def build_case(root, with_t_avg=True):
 def run(root, **kwargs):
     """Run the computer over the synthetic case and return its results dict."""
     options = dict(components='uu', y_coords_str='', x_coords_str='',
-                   timesteps=[TIMESTEP], mean_mode='t_avg', symmetry_avg=False)
+                   timesteps=[TIMESTEP], mean_mode='t_avg')
     options.update(kwargs)
     computer = TwoPointCorrelationComputer(str(root), **options)
     if not computer.compute_for_case(CASE, TIMESTEP):
         return None
     return computer.processed_results[(CASE, TIMESTEP)]
+
+
+def run_quietly(root, **kwargs):
+    """run(), also returning everything it printed."""
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        out = run(root, **kwargs)
+    return out, printed.getvalue()
 
 
 def main():
@@ -169,6 +195,13 @@ def main():
     L = op.compute_integral_length_scale(rho, sep)
     check('integral scale of that mode is 1/k', abs(L[0] - 1.0 / K) < 0.01 / K,
           f'{L[0]:.5f} vs {1.0 / K:.5f}')
+    L_neg = op.compute_integral_length_scale(-rho, sep)
+    check('a correlation starting negative has the same L (not 0)', np.isclose(L_neg[0], L[0]),
+          f'{L_neg[0]:.5f} vs {L[0]:.5f}')
+    y_odd = np.linspace(-1.0, 1.0, 9)
+    R_odd = np.cos(K * sep)[:, None] * y_odd[None, :]
+    check('folding an odd-in-y R_uv with the odd sign keeps it',
+          np.allclose(op.symmetry_average_correlation(R_odd, 1, axis=1), R_odd))
     check('periodic FFT estimator == direct wrap-around sum',
           np.allclose(op.compute_two_point_correlation_z(signal, signal, max_sep=7),
                       np.stack([(signal * np.roll(signal, -d, axis=0)).mean(axis=0) for d in range(7)])))
@@ -240,14 +273,10 @@ def main():
         check('chunked x-average == single-slab x-average (uv)',
               np.allclose(chunked['uv']['R'], single['uv']['R'], atol=1e-12))
 
-        print('\n--- centreline folding ---')
-        folded = run(root, components='uu,uv', x_coords_str='0.5', symmetry_avg=True)
-        # amp_u is even in y by construction, so folding must leave R_uu alone.
-        check('folding leaves the even R_uu unchanged',
-              np.allclose(folded['uu']['R'], uu['R'][:, :, [0]], atol=1e-12))
-        # R_uv is even here too, so folding it with the odd (-1)^1 sign must cancel it.
-        check('folding an even R_uv with the odd sign cancels it (parity is enforced)',
-              np.allclose(folded['uv']['R'], 0.0, atol=1e-12))
+        print('\n--- no centreline folding unless asked for ---')
+        full = run(root, components='uu,uv', x_coords_str='0.5')
+        check('full channel keeps every y row, unfolded',
+              full['uu']['R'].shape[1] == NY and np.allclose(full['uv']['R'], uv['R'][:, :, [0]]))
 
         print('\n--- half-channel selection ---')
         half_len = NY - NY // 2
@@ -266,11 +295,38 @@ def main():
         check("'average' side averages the two halves",
               np.allclose(both['uu']['R'][0, :, 0],
                           op.symmetric_average(uu['R'][0, :, 0])))
-        # u'v' is antisymmetric about the centreline, so 'average' must fall back
-        # to the lower half rather than cancelling the component.
+        # 'average' folds R_uv with the (-1)^1 sign; the planted R_uv is even in
+        # y (not the odd profile a real channel has), so that fold must cancel it.
         uv_avg = run(root, components='uv', x_coords_str='0.5', half_channel_side='average')
-        check("'average' falls back to 'lower' for the antisymmetric uv",
-              np.allclose(uv_avg['uv']['R'][0, :, 0], uv['R'][0, :half_len, 0]))
+        check("'average' folds uv with the odd sign (an even R_uv cancels)",
+              np.allclose(uv_avg['uv']['R'], 0.0, atol=1e-12))
+
+        print('\n--- symmetry check before folding ---')
+        _, printed = run_quietly(root, components='uu', x_coords_str='0.5', half_channel_side='average')
+        check("a symmetric flow folds without a warning", 'WARNING' not in printed)
+        asym_root = Path(tempfile.mkdtemp(prefix='chapsim2_corr_asym_'))
+        try:
+            build_case(asym_root, asymmetric=True)
+            _, printed = run_quietly(asym_root, components='uu', x_coords_str='0.5',
+                                     half_channel_side='average')
+            check("an asymmetric flow is flagged when folded", 'not symmetric' in printed)
+            _, printed = run_quietly(asym_root, components='uu', x_coords_str='0.5',
+                                     half_channel_side='lower')
+            check("and is not flagged when only one wall is used", 'WARNING' not in printed)
+        finally:
+            shutil.rmtree(asym_root, ignore_errors=True)
+
+        print('\n--- max separation ---')
+        one = run(root, components='uu', x_coords_str='0.5', max_sep=1)
+        check('max_sep counts cells: 1 cell -> separations 0 and dz',
+              one['uu']['R'].shape[0] == 2 and np.isclose(one['uu']['sep'][-1], LZ / NZ))
+        negative, printed = run_quietly(root, components='uu', x_coords_str='0.5', max_sep=-3)
+        check('a negative max_sep falls back to half the span instead of raising',
+              negative is not None and negative['uu']['R'].shape[0] == NZ // 2 + 1)
+        too_big = run(root, components='uu', x_coords_str='0.5', max_sep=10 * NZ)
+        check('max_sep beyond the domain is clamped to nz - 1 cells', too_big['uu']['R'].shape[0] == NZ)
+        _, printed = run_quietly(root, components='uu', x_coords_str='0.5', max_sep=3)
+        check('a separation too short to reach rho = 0 is reported', 'L is truncated' in printed)
 
         print('\n--- degraded inputs ---')
         no_t_avg_root = Path(tempfile.mkdtemp(prefix='chapsim2_corr_nomean_'))
@@ -278,9 +334,49 @@ def main():
             build_case(no_t_avg_root, with_t_avg=False)
             fallback = run(no_t_avg_root, components='uu', x_coords_str='0.5')
             check('missing t_avg file falls back to the snapshot mean',
-                  fallback is not None and np.allclose(fallback['uu']['rho'][0], 1.0))
+                  fallback is not None and np.allclose(fallback['uu']['rho'][0], 1.0)
+                  and fallback['uu']['mean'] == 'u: snapshot mean')
         finally:
             shutil.rmtree(no_t_avg_root, ignore_errors=True)
+
+        # The t_avg mean is offset from the snapshot's own spanwise mean, so the
+        # two decompositions give different R and a silent switch would show.
+        u_only_root = Path(tempfile.mkdtemp(prefix='chapsim2_corr_uonly_'))
+        try:
+            build_case(u_only_root, t_avg_letters=('u1',), t_avg_offset=0.3)
+            alone = run(u_only_root, components='uu', x_coords_str='0.5')
+            with_v = run(u_only_root, components='uu,uv', x_coords_str='0.5')
+            snapshot = run(u_only_root, components='uu', x_coords_str='0.5', mean_mode='snapshot')
+            check("a missing t_avg v leaves uu's t_avg mean alone",
+                  np.allclose(with_v['uu']['R'], alone['uu']['R'])
+                  and not np.allclose(with_v['uu']['R'], snapshot['uu']['R'])
+                  and with_v['uu']['mean'] == 'u: t_avg' and with_v['uv']['mean'] == 'u: t_avg, v: snapshot mean')
+        finally:
+            shutil.rmtree(u_only_root, ignore_errors=True)
+
+        tsp_root = Path(tempfile.mkdtemp(prefix='chapsim2_corr_tsp_'))
+        try:
+            build_case(tsp_root, with_tsp_avg=True)
+            tsp = run(tsp_root, components='uu,uv', x_coords_str='0.5, 3.5')
+            check('the small tsp_avg mean is used first, t_avg only for what it lacks',
+                  tsp['uv']['mean'] == 'u: tsp_avg, v: t_avg')
+            check('and gives the same correlation as the t_avg mean',
+                  np.allclose(tsp['uu']['R'], uu['R']) and np.allclose(tsp['uv']['R'], uv['R']))
+
+            # A second snapshot of the same field with no averaged files of its own.
+            second = '000200'
+            flow = (tsp_root / CASE / '2_visu' / f'domain1_flow_{TIMESTEP}.xdmf').read_text()
+            (tsp_root / CASE / '2_visu' / f'domain1_flow_{second}.xdmf').write_text(flow)
+            computer = TwoPointCorrelationComputer(str(tsp_root), 'uu', '', '0.5',
+                                                   timesteps=[TIMESTEP, second])
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                computer.compute_for_case(CASE, 'avg')
+            check('averaging snapshots that removed different means is flagged',
+                  'mixes' in printed.getvalue()
+                  and computer.processed_results[(CASE, 'avg')]['uu']['mean'] == 'mixed')
+        finally:
+            shutil.rmtree(tsp_root, ignore_errors=True)
 
         missing = run(root / 'nonexistent', components='uu')
         check('a missing case is reported, not raised', missing is None)

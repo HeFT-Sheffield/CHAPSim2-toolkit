@@ -58,7 +58,8 @@ two_point_corr_y_coords = '' # y coords for the R(dz) line plot, e.g. '-0.9,-0.5
 two_point_corr_x_coords = '' # x stations to correlate at (blank = mid-domain, or all x if average_x_direction)
 two_point_corr_max_sep = 0 # max separation in cells (0 = half the spanwise domain)
 two_point_corr_mean_mode = 't_avg' # 't_avg' (u' = u_inst - u_t_avg) or 'snapshot' (remove the snapshot's own z-mean)
-two_point_corr_symmetry_avg = True # fold about the centreline to double the sample (channels only)
+# The correlation is folded about the centreline only when half_channel_side = 'average' (symmetric channels only;
+# a warning is printed if the lower and upper walls differ)
 
 # Reynolds Stress Budget terms
 re_stress_budget_on = False

@@ -1403,6 +1403,12 @@ def compute_integral_length_scale(rho, sep_coords, cutoff='first_zero'):
     the final positive point down to zero at the crossing, placing the cut
     within a fraction of a cell of the true crossing. cutoff='full'
     integrates the whole range supplied.
+
+    A cross-correlation can start negative -- rho_uv(0) < 0 wherever <u'v'> is,
+    e.g. across the lower half of a channel -- so with 'first_zero' each
+    column is taken with the sign of its rho(0) and cut at its first sign
+    change: L is then the width of the correlated region whatever its sign,
+    rather than 0 wherever the correlation happens to be negative.
     """
     rho = np.asarray(rho, dtype=float)
     sep = np.asarray(sep_coords, dtype=float)
@@ -1412,6 +1418,7 @@ def compute_integral_length_scale(rho, sep_coords, cutoff='first_zero'):
         raise ValueError("cutoff must be 'first_zero' or 'full'.")
 
     if cutoff == 'first_zero':
+        rho = rho * np.sign(rho[0])
         non_positive = rho <= 0.0
         # argmax gives 0 both for 'crosses at the first point' and 'never
         # crosses', so fall back to the full range where there is no crossing.

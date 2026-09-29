@@ -144,9 +144,8 @@ class Config:
     two_point_corr_components: str = 'uu'
     two_point_corr_y_coords: str = ''
     two_point_corr_x_coords: str = ''
-    two_point_corr_max_sep: int = 0          # 0 -> half the spanwise domain
+    two_point_corr_max_sep: int = 0          # in cells; 0 -> half the spanwise domain
     two_point_corr_mean_mode: str = 't_avg'  # 't_avg' or 'snapshot'
-    two_point_corr_symmetry_avg: bool = True
 
     @classmethod
     def from_module(cls, config_module):
@@ -236,7 +235,6 @@ class Config:
             two_point_corr_x_coords=getattr(config_module, 'two_point_corr_x_coords', ''),
             two_point_corr_max_sep=getattr(config_module, 'two_point_corr_max_sep', 0),
             two_point_corr_mean_mode=getattr(config_module, 'two_point_corr_mean_mode', 't_avg'),
-            two_point_corr_symmetry_avg=getattr(config_module, 'two_point_corr_symmetry_avg', True),
         )
 
 @dataclass
@@ -1952,10 +1950,10 @@ class SpectrumComputer:
 
 
 _TWO_POINT_CORR_VARS = {
-    # letter: (instantaneous XDMF name, t_avg XDMF name, label)
-    'u': ('qx_ccc', 't_avg_u1', "u'"),
-    'v': ('qy_ccc', 't_avg_u2', "v'"),
-    'w': ('qz_ccc', 't_avg_u3', "w'"),
+    # letter: (instantaneous XDMF name, averaged name without its tsp_avg_/t_avg_ prefix, label)
+    'u': ('qx_ccc', 'u1', "u'"),
+    'v': ('qy_ccc', 'u2', "v'"),
+    'w': ('qz_ccc', 'u3', "w'"),
 }
 
 
@@ -1978,12 +1976,14 @@ class TwoPointCorrelationComputer:
     TurbulenceStatsPipeline.statistics because its results are dicts rather
     than plain ndarrays (process_all's generic normalization assumes ndarrays).
 
-    Fluctuations are u' = u_inst - u_t_avg (mean_mode='t_avg'), the Reynolds
-    decomposition the reference implementation uses. The t_avg field is
-    z-averaged first: the same spanwise homogeneity the periodic correlation
-    already assumes, for nz times more samples in the mean. With
-    mean_mode='snapshot', or when no t_avg file exists, each snapshot's own
-    spanwise mean is removed instead.
+    Fluctuations are u' = u_inst - <u>_{t,z} (mean_mode='t_avg'), the Reynolds
+    decomposition the reference implementation uses. The mean is read from the
+    tsp_avg (zi1) file, which already holds it spanwise-averaged, or failing
+    that from the full t_avg field, z-averaged here: the same spanwise
+    homogeneity the periodic correlation already assumes, for nz times more
+    samples in the mean. With mean_mode='snapshot', or for any velocity
+    component neither file holds, each snapshot's own spanwise mean is
+    removed instead.
 
     Only the wall-normal direction is kept in full. x is inhomogeneous in a
     developing flow, so the correlation is taken at selected x stations (all
@@ -1992,10 +1992,19 @@ class TwoPointCorrelationComputer:
     of a real grid runs to hundreds of MB. x stations are chosen from the
     file's own x-range; the config's x_crop does not apply here.
 
+    Nothing assumes the flow is symmetric about the centreline unless
+    half_channel_side='average' asks for it, as for every other statistic:
+    only then are the two halves folded together, and a warning is printed
+    if their variance profiles show the flow is not symmetric.
+
     raw_results / processed_results:
         {(case, timestep): {component: {'R', 'rho', 'L', 'var1', 'var2',
-                                        'sep', 'y', 'x', 'label'}}}
+                                        'sep', 'y', 'x', 'label', 'mean'}}}
     """
+
+    # Relative mismatch of the lower- and upper-wall variance profiles above
+    # which folding the two halves together is flagged -- see _correlate_snapshot.
+    _ASYMMETRY_WARN = 0.2
 
     # x columns per FFT call: a real (nz, ny, nx) snapshot is ~1 GB and its
     # transform another, so the separation is taken in slabs to bound the
@@ -2004,16 +2013,20 @@ class TwoPointCorrelationComputer:
 
     def __init__(self, folder_path: str, components: str, y_coords_str: str,
                  x_coords_str: str = '', timesteps: Optional[List[str]] = None,
-                 max_sep: int = 0, mean_mode: str = 't_avg', symmetry_avg: bool = True,
+                 max_sep: int = 0, mean_mode: str = 't_avg',
                  half_channel_side: Optional[str] = None, average_x: bool = False):
         self.folder_path = folder_path
         self.components = self._parse_components(components)
         self.y_coords = [float(s) for s in y_coords_str.replace(',', ' ').split() if s.strip()]
         self.x_coords = [float(s) for s in x_coords_str.replace(',', ' ').split() if s.strip()]
         self.timesteps = list(timesteps) if timesteps else []
-        self.max_sep = int(max_sep) if max_sep else None
+        # max_sep is in cells; 0 means the default of half the spanwise domain.
+        max_sep = int(max_sep) if max_sep else 0
+        if max_sep < 0:
+            print(f'Two-point correlation: max separation {max_sep} is negative; '
+                  f'using half the spanwise domain instead.')
+        self.max_sep = max_sep if max_sep > 0 else None
         self.mean_mode = mean_mode if mean_mode in ('t_avg', 'snapshot') else 't_avg'
-        self.symmetry_avg = symmetry_avg
         self.half_channel_side = half_channel_side
         self.average_x = average_x
         self.raw_results: Dict[Tuple[str, str], Dict[str, Dict[str, np.ndarray]]] = {}
@@ -2038,18 +2051,6 @@ class TwoPointCorrelationComputer:
             print("Two-point correlation: no valid components given; defaulting to 'uu'.")
             components = ['uu']
         return components
-
-    def _half_side_for(self, comp: str) -> Optional[str]:
-        """Half-channel side to apply to one component's correlation."""
-        side = self.half_channel_side
-        if side == 'average' and comp.count('v') % 2:
-            # An odd number of wall-normal components makes the correlation
-            # antisymmetric about the centreline, so averaging the two halves
-            # cancels it -- the same exclusion process_all makes for u'v'.
-            print(f"Two-point correlation: '{comp}' is antisymmetric about the centreline, so the "
-                  f"'average' half-channel side would cancel it; using the lower half instead.")
-            return 'lower'
-        return side
 
     @staticmethod
     def _y_for_side(y_cell: np.ndarray, side: Optional[str]) -> np.ndarray:
@@ -2137,12 +2138,21 @@ class TwoPointCorrelationComputer:
                           f"cannot average over timesteps.")
                     return False
                 data[field] = data[field] * weight_old + single[comp][field] * weight_new
+            if data['mean'] != single[comp]['mean'] and data['mean'] != 'mixed':
+                # Each snapshot can only use the averaged file of its own
+                # timestep, so some may have fallen back to their own spanwise
+                # mean; the average would then blend two different fluctuations.
+                print(f"WARNING: two-point correlation '{comp}': the snapshots being averaged removed "
+                      f"different means ({data['mean']} vs {single[comp]['mean']}), so the average mixes "
+                      f"two definitions of the fluctuation. Set the correlation mean to 'snapshot' "
+                      f"for a consistent average.")
+                data['mean'] = 'mixed'
         return True
 
     def _correlate_snapshot(self, case: str, timestep: str):
         """Correlate one instantaneous snapshot; returns unnormalised results."""
         file_paths = ut.visu_file_paths(self.folder_path, case, timestep)
-        inst_xdmf, t_avg_xdmf = file_paths[0], file_paths[1]
+        inst_xdmf = file_paths[0]
         if not os.path.isfile(inst_xdmf):
             print(f"Missing instantaneous flow file for the two-point correlation: {case}, {timestep}\n"
                   f"  Looked for: {inst_xdmf}")
@@ -2178,69 +2188,108 @@ class TwoPointCorrelationComputer:
                   f"field {(nz, ny, nx)} for the two-point correlation: {case}, {timestep}")
             return None
 
-        max_sep = nz // 2 + 1 if self.max_sep is None else min(self.max_sep, nz)
-        if self.max_sep is not None and self.max_sep > nz:
-            print(f'Two-point correlation: max separation {self.max_sep} exceeds nz={nz}; using {max_sep}.')
+        # max_sep counts cells, so the correlation has max_sep + 1 points
+        # (dz = 0 included); the default reaches half the spanwise domain.
+        max_sep = nz // 2 + 1 if self.max_sep is None else min(self.max_sep + 1, nz)
+        if self.max_sep is not None and self.max_sep >= nz:
+            print(f'Two-point correlation: max separation {self.max_sep} cells exceeds the '
+                  f'{nz - 1} available; using {nz - 1}.')
 
         x_indices, x_values, x_mode = self._select_x(x_cell, nx)
-        means = self._load_means(t_avg_xdmf, letters, ny, nx)
+        means, mean_sources = self._load_means(file_paths, letters, ny, nx)
         sep = z_cell[:max_sep] - z_cell[0]
 
+        side = self.half_channel_side
         results = {}
         for comp in self.components:
             R, var1, var2 = self._correlate_component(comp, data, means, x_indices,
                                                       max_sep, x_mode == 'average')
-            if self.symmetry_avg:
-                # var1/var2 are single-point variances: even in y whatever the
-                # component, so they fold with a + sign (n = 0).
+            if side == 'average':
+                # Averaging the two halves is only valid for a channel that is
+                # statistically symmetric about y = 0. Check that on the
+                # single-point variances, which a symmetric flow makes even in y.
+                asymmetry = 0.0
+                for var in (var1, var2):
+                    mirrored = np.flip(var, axis=0)
+                    total = float((var + mirrored).sum())
+                    if total > 0.0:
+                        asymmetry = max(asymmetry, float(np.abs(var - mirrored).sum()) / total)
+                if asymmetry > self._ASYMMETRY_WARN:
+                    print(f"WARNING: two-point correlation '{comp}': the lower- and upper-wall variance "
+                          f"profiles differ by {100 * asymmetry:.0f}% (above the {100 * self._ASYMMETRY_WARN:.0f}% "
+                          f"expected from sampling noise), so this flow is not symmetric about the "
+                          f"centreline. half_channel_side='average' folds the two halves together; "
+                          f"use 'lower' or 'upper' to see each wall's own correlation.")
+                else:
+                    print(f"Two-point correlation '{comp}': folding the two halves together "
+                          f"(half_channel_side='average'); lower/upper variance mismatch "
+                          f"{100 * asymmetry:.0f}%.")
+
+                # Under the y-reflection v' changes sign while u' and w' do
+                # not, so R folds with a (-1)**n factor, n the number of v's in
+                # the pair -- which keeps u'v' rather than cancelling it. The
+                # single-point variances are even whatever the pair (n = 0).
                 R = op.symmetry_average_correlation(R, comp.count('v'), axis=1)
                 var1 = op.symmetry_average_correlation(var1, 0, axis=0)
                 var2 = op.symmetry_average_correlation(var2, 0, axis=0)
 
-            side = self._half_side_for(comp)
+            # The fold has already averaged the halves, so 'average' just keeps
+            # the lower one, indexed outward from its wall like _y_for_side.
+            half = 'lower' if side == 'average' else side
             results[comp] = {
-                'R': op.apply_half_channel(R, side, axis=1),
-                'var1': op.apply_half_channel(var1, side, axis=0),
-                'var2': op.apply_half_channel(var2, side, axis=0),
+                'R': op.apply_half_channel(R, half, axis=1),
+                'var1': op.apply_half_channel(var1, half, axis=0),
+                'var2': op.apply_half_channel(var2, half, axis=0),
                 'sep': sep,
                 'y': self._y_for_side(y_cell[:ny], side),
                 'x': x_values,
                 'label': f'$R_{{{comp}}}$',
+                'mean': ', '.join(f'{c}: {mean_sources[c]}' for c in sorted(set(comp))),
             }
 
-        mean_source = 't_avg field' if means is not None else 'each snapshot'
         station_text = ('x-averaged over the whole domain' if x_mode == 'average'
                         else f'{len(x_values)} x station(s)')
+        mean_text = ', '.join(f'{c} from {mean_sources[c]}' for c in letters)
         print(f"Two-point correlation ({case}, t={timestep}): {', '.join(self.components)}; "
-              f"separations up to {float(sep[-1]):.4g} ({max_sep} points); {station_text}; "
-              f"mean removed from {mean_source}")
+              f"separations up to {float(sep[-1]):.4g} ({max_sep - 1} cells); {station_text}; "
+              f"mean removed: {mean_text}")
 
         data.clear()  # release the snapshot's multi-GB arrays before the next one
         return results
 
-    def _load_means(self, t_avg_xdmf: str, letters: List[str], ny: int, nx: int):
-        """Load the z-averaged time-mean velocities, or None to use the snapshot's own mean."""
+    def _load_means(self, file_paths: List[str], letters: List[str], ny: int, nx: int):
+        """Spanwise- and time-averaged velocity for each letter, with where it came from.
+
+        The tsp_avg (zi1) file already holds the (ny, nx) average -- a few MB
+        per component -- so it is tried first; the full 3-D t_avg field (over a
+        GB each) is read and z-averaged only for letters it lacks. A letter
+        found in neither is left out of `means`, and _fluct_block removes that
+        component's own snapshot mean instead, without affecting the others.
+        """
         if self.mean_mode != 't_avg':
-            return None
-        if not os.path.isfile(t_avg_xdmf):
-            print(f"  No t_avg file at {t_avg_xdmf}; removing each snapshot's own spanwise mean instead.")
-            return None
+            return {}, {c: 'snapshot mean' for c in letters}
 
-        var_meta, grid_info = ut.parse_xdmf_metadata(t_avg_xdmf)
-        names = {c: _TWO_POINT_CORR_VARS[c][1] for c in letters}
-        loaded = ut.load_xdmf_variables(var_meta, list(names.values()),
-                                        grid_info=grid_info, average_z=True)
+        means, sources = {}, {}
+        for xdmf, prefix in ((file_paths[2], 'tsp_avg_'), (file_paths[1], 't_avg_')):
+            wanted = {c: prefix + _TWO_POINT_CORR_VARS[c][1] for c in letters if c not in means}
+            if not wanted or not os.path.isfile(xdmf):
+                continue
+            var_meta, grid_info = ut.parse_xdmf_metadata(xdmf)
+            names = [name for name in wanted.values() if name in var_meta]
+            loaded = ut.load_xdmf_variables(var_meta, names, grid_info=grid_info, average_z=True)
+            for letter, name in wanted.items():
+                array = loaded.get(name)
+                if array is not None and array.shape == (ny, nx):
+                    means[letter] = array
+                    sources[letter] = prefix[:-1]
 
-        means = {}
-        for letter, name in names.items():
-            array = loaded.get(name)
-            if array is None or array.shape != (ny, nx):
-                shape = None if array is None else array.shape
-                print(f"  t_avg field '{name}' missing or shaped {shape} (expected {(ny, nx)}); "
-                      f"removing each snapshot's own spanwise mean instead.")
-                return None
-            means[letter] = array
-        return means
+        for letter in letters:
+            if letter not in means:
+                print(f"  No time-averaged {_TWO_POINT_CORR_VARS[letter][1]} of shape {(ny, nx)} in the "
+                      f"tsp_avg or t_avg files; removing the snapshot's own spanwise mean of "
+                      f"{_TWO_POINT_CORR_VARS[letter][2]} instead.")
+                sources[letter] = 'snapshot mean'
+        return means, sources
 
     def _correlate_component(self, comp: str, data: Dict[str, np.ndarray], means,
                              x_indices: np.ndarray, max_sep: int, average_x: bool):
@@ -2284,16 +2333,24 @@ class TwoPointCorrelationComputer:
     def _fluct_block(field: np.ndarray, means, letter: str, x_indices: np.ndarray) -> np.ndarray:
         """Fluctuation field for one slab of x columns."""
         block = field[:, :, x_indices]
-        if means is not None:
+        if letter in means:
             return op.compute_inst_fluc(block, means[letter][:, x_indices][None, :, :])
         return block - block.mean(axis=0, keepdims=True)
 
     @staticmethod
     def _finalise(result):
         """Normalise to a correlation coefficient and integrate for a length scale."""
-        for data in result.values():
+        for comp, data in result.items():
             data['rho'] = op.normalise_correlation(data['R'], data['var1'], data['var2'])
             data['L'] = op.compute_integral_length_scale(data['rho'], data['sep'])
+            # L integrates to the first zero crossing; where rho has not reached
+            # zero by the largest separation, L is cut short by max_sep.
+            signed = data['rho'] * np.sign(data['rho'][0])
+            uncrossed = int(np.all(signed > 0.0, axis=0).sum())
+            if uncrossed:
+                print(f"Two-point correlation '{comp}': rho has not reached zero by the largest "
+                      f"separation at {uncrossed} of {signed[0].size} points, so L is truncated "
+                      f"there; increase the max separation to cover it.")
         return result
 
 
@@ -2450,7 +2507,6 @@ class TurbulenceStatsPipeline:
                 timesteps=self.config.timesteps,
                 max_sep=self.config.two_point_corr_max_sep,
                 mean_mode=self.config.two_point_corr_mean_mode,
-                symmetry_avg=self.config.two_point_corr_symmetry_avg,
                 half_channel_side=(self.config.half_channel_side
                                    if self.config.half_channel_plot else None),
                 average_x=self.config.average_x_direction,
@@ -3320,7 +3376,10 @@ class TurbulencePlotter:
             for comp, data in by_comp.items():
                 for x_index, x_value in enumerate(data['x']):
                     rho = data['rho'][:, :, x_index]
-                    if rho.shape[1] < 2 or np.all(np.isnan(rho)):
+                    if min(rho.shape) < 2 or np.all(np.isnan(rho)):
+                        print(f"Two-point correlation contour for '{comp}' ({case}, t={timestep}, "
+                              f"x={float(x_value):.3g}) skipped: it needs at least 2 separations and "
+                              f"2 y points with finite values, got {rho.shape} (separations, y).")
                         continue
 
                     X, Y = np.meshgrid(data['sep'], data['y'])
@@ -3719,7 +3778,9 @@ class TurbulencePlotter:
     def save_figures_by_class(self, figures: Dict[str, Any]) -> None:
         """Save multiple figures, one for each class type"""
         for class_name, fig in figures.items():
-            suffix = f'_{class_name.lower()}'
+            # Keys can carry a nested case name ('group/case'); a path separator
+            # in the file name would point savefig at a directory that doesn't exist.
+            suffix = f'_{class_name.lower()}'.replace('/', '_').replace('\\', '_')
             self.save_figure(fig, suffix)
 
     def display_figure(self) -> None:

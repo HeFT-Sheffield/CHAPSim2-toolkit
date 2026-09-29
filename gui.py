@@ -570,10 +570,9 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
         erow(s, 'Correlation components', sv('two_point_corr_components', 'uu'))
         erow(s, 'Correlation y coords', sv('two_point_corr_y_coords', ''))
         erow(s, 'Correlation x stations', sv('two_point_corr_x_coords', ''))
-        erow(s, 'Correlation max. sep.', sv('two_point_corr_max_sep', '0'))
+        erow(s, 'Corr. max sep. (cells)', sv('two_point_corr_max_sep', '0'))
         crow(s, 'Correlation mean', sv('two_point_corr_mean_mode', 't_avg'),
              ['t_avg', 'snapshot'])
-        chk(s, 'Fold correlation about centreline', bv('two_point_corr_symmetry_avg', True))
         thermal_stats_section = sec('Thermal Statistics')
         s = thermal_stats_section
         chk(s, 'Wall Heat transfer coeff.', bv('heat_transf_coeff_on', False))
@@ -825,7 +824,6 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
             two_point_corr_x_coords=v['two_point_corr_x_coords'].get(),
             two_point_corr_max_sep=self._parse_int(v['two_point_corr_max_sep'].get()),
             two_point_corr_mean_mode=v['two_point_corr_mean_mode'].get(),
-            two_point_corr_symmetry_avg=v['two_point_corr_symmetry_avg'].get(),
         )
 
     # ------ Run pipeline -------------------------------------------------------------
@@ -940,7 +938,7 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 'norm_y_to_y_plus': False, 'norm_temp_by_ref_temp': False,
                 'large_text_on': False, 'ux_velocity_log_ref_on': True,
                 'mhd_NK_ref_on': False, 'mkm180_ch_ref_on': False,
-                'two_point_corr_on': False, 'two_point_corr_symmetry_avg': True,
+                'two_point_corr_on': False,
             }
             for name, default in str_fields.items():
                 if name in v:
@@ -1074,7 +1072,6 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
             f"two_point_corr_x_coords = '{v['two_point_corr_x_coords'].get()}'",
             f"two_point_corr_max_sep = {self._parse_int(v['two_point_corr_max_sep'].get())}",
             f"two_point_corr_mean_mode = '{v['two_point_corr_mean_mode'].get()}'",
-            f"two_point_corr_symmetry_avg = {v['two_point_corr_symmetry_avg'].get()}",
             '',
             f"heat_transf_coeff_on = {v['heat_transf_coeff_on'].get()}",
             f"Nusselt_number_on = {v['Nusselt_number_on'].get()}",
