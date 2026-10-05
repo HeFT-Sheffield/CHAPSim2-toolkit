@@ -1597,6 +1597,22 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
 
     def _load_vars(self):
         xdmf, grid_select = self._xdmf_target()
+        if not os.path.isfile(xdmf):
+            # Groups are written at different frequencies - a case can hold
+            # flow at a timestep that has no thermo - so name the missing file
+            # and list what that group does have.
+            self._var_lb.delete(0, tk.END)
+            self._var_meta = {}
+            import utils as _ut
+            have = sorted(
+                {f.rsplit('_', 1)[-1][:-5]
+                 for f in os.listdir(os.path.dirname(xdmf))
+                 if f.startswith(f'domain1_{self._phys.get()}_') and f.endswith('.xdmf')
+                 and f.rsplit('_', 1)[-1][:-5].isdigit()}, key=int)
+            self._log(f'No such file: {os.path.basename(xdmf)}'
+                      + (f"   ({self._phys.get()} exists at: {', '.join(have)})" if have
+                         else f"   (no {self._phys.get()} output in this case)"))
+            return
         self._log(f'Reading metadata: {xdmf}'
                   + (f" (slice {grid_select})" if grid_select else ''))
         try:
@@ -1641,7 +1657,7 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
         def worker():
             try:
                 from utils import (parse_xdmf_metadata, load_xdmf_variables, slice_axis_info,
-                                    parse_x_crop_input, apply_x_crop)
+                                    parse_x_crop_input, apply_x_crop, axis_labels as _axis_labels)
                 from slice import (extract_slice, plot_slice, plot_combined_slices,
                                    process_data_arrays, get_slice_location, apply_fluctuation,
                                    apply_vorticity)
@@ -1709,8 +1725,13 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
                         axis_labels = axis_info['axis_labels']
                         crop_plane = axis_info['plane']
                     else:
+                        # An untagged 2-D dataset: a tsp_avg plane, whose
+                        # remaining axes are x and the wall-normal one. Labels
+                        # still have to follow the coordinate system, or a
+                        # pipe's radius is captioned 'y'.
                         c1_key, c2_key = 'grid_x', 'grid_y'
-                        axis_labels = ('x', 'y')
+                        labels = _axis_labels(grid.get('coordinate_system'))
+                        axis_labels = (labels['x'], labels['y'])
                         crop_plane = plane
                     coord1 = grid.get(c1_key, np.arange(sample.shape[-1] if sample.ndim > 1 else 1))
                     coord2 = grid.get(c2_key, np.arange(sample.shape[0]))
@@ -3183,6 +3204,15 @@ class MeshAnalysisTab(ttk.Frame):
         else:
             note = 'Annular: y top fixed to 1 and Lz to 2*pi; set y bottom (inner radius).'
             lyb_state, lyt_state, lzz_state = 'normal', 'disabled', 'disabled'
+            # y bottom is a radius here, not a wall position. Arriving from a
+            # channel it still holds -1, which the solver would take as the
+            # inner radius and build a grid running through r < 0.
+            try:
+                inner = float(self._lyb.get())
+            except (TypeError, ValueError):
+                inner = -1.0
+            if not 0.0 < inner < 1.0:
+                self._lyb.set(0.5)
 
         self._extent_note.configure(text=note)
         self._lyb_entry.configure(state=lyb_state)

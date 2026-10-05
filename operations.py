@@ -339,18 +339,58 @@ def compute_peak_over_y(field, half=None):
 def compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0):
     return tau_w / (0.5 * ref_rho * ref_bulk_velocity**2)
 
-def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
-    """Compute wall shear stress from near-wall interpolated velocity points."""
+def wall_side(ux_data):
+    """Which end of the wall-normal axis is a no-slip wall: 'lower' or 'upper'.
+
+    A pipe's wall-normal coordinate is the radius, so index 0 is the axis,
+    not a wall: the velocity there is the profile maximum and its gradient
+    vanishes by symmetry. Taking the 'lower' end regardless reports the
+    centreline gradient as the wall shear, which for a developing pipe comes
+    out several times too small and drags u_tau, Re_tau, y+ and every
+    u_tau-normalised profile down with it.
+
+    A channel or an annulus has walls at both ends, and either gives a valid
+    wall shear, so 'lower' is kept for them and existing results are
+    unchanged. Only a clearly free end - one carrying a large fraction of the
+    profile's peak speed while the other is near rest - selects 'upper'.
+    """
     arr = np.asarray(ux_data)
+    profile = arr[:, 2] if (arr.ndim == 2 and arr.shape[1] == 3) else arr
+    while np.ndim(profile) > 1:
+        profile = np.asarray(profile).mean(axis=-1)
+    if np.size(profile) < 2:
+        return 'lower'
+
+    lo, hi = abs(float(profile[0])), abs(float(profile[-1]))
+    scale = float(np.nanmax(np.abs(profile)))
+    if scale <= 0.0 or not np.isfinite(scale):
+        return 'lower'
+    # Free ends sit near the peak; no-slip ends sit near zero.
+    if lo > 0.5 * scale and hi < 0.1 * scale:
+        return 'upper'
+    return 'lower'
+
+
+def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None, wall=None):
+    """Compute wall shear stress from near-wall interpolated velocity points.
+
+    ``wall`` selects which end to differentiate at; None detects it with
+    wall_side(), which keeps 'lower' for channels and annuli and picks the
+    wall rather than the axis for a pipe.
+    """
+    arr = np.asarray(ux_data)
+    wall = wall or wall_side(ux_data)
+    edge, neighbour = (0, 1) if wall == 'lower' else (-1, -2)
+
     if arr.ndim == 2 and arr.shape[1] == 3:
-        y0, y1 = float(arr[0, 1]), float(arr[1, 1])
-        u0 = arr[0, 2]
+        y0, y1 = float(arr[edge, 1]), float(arr[neighbour, 1])
+        u0 = arr[edge, 2]
     else:
         if arr.shape[0] < 2:
             raise ValueError('Need at least two wall-normal cells for near-wall shear stress.')
-        u0 = arr[0]
+        u0 = arr[edge]
         if y_coords is not None:
-            y0, y1 = float(y_coords[0]), float(y_coords[1])
+            y0, y1 = float(y_coords[edge]), float(y_coords[neighbour])
         else:
             y0, y1 = 0.0, 1.0
 
@@ -358,7 +398,7 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
     if dy01 == 0.0:
         raise ValueError('Invalid wall-normal coordinates: first two points have zero spacing.')
 
-    u_wall = interpolate_wall_point(ux_data, y_coords=y_coords, wall='lower')
+    u_wall = interpolate_wall_point(ux_data, y_coords=y_coords, wall=wall)
     dy_wall_to_first_cell = 0.5 * dy01
     du_dy_wall = (u0 - u_wall) / dy_wall_to_first_cell
     mu = 1.0 / float(Re_bulk)
