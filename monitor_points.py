@@ -365,12 +365,6 @@ def monitor_dir(path):
     return path
 
 
-path = monitor_dir(sys.argv[1] if len(sys.argv) > 1 else os.getcwd())
-
-print('='*100)
-print(f'Plotting monitor points from: {path}')
-print('='*100)
-
 # Interactive configuration prompts
 def get_yes_no(prompt, default='y'):
     """Get yes/no input from user."""
@@ -390,148 +384,162 @@ def get_int(prompt, default):
         print(f"Invalid input, using default: {default}")
         return default
 
-# Get configuration from user
-print("\nConfiguration:")
-print("-" * 100)
 
-discovered_pts = sorted(
-    int(m.group(1))
-    for m in (re.match(r'domain\d+_monitor_pt(\d+)_flow\.dat$', f)
-              for f in (os.listdir(path) if os.path.isdir(path) else []))
-    if m
-)
-if discovered_pts:
-    print(f"Found monitor points: {', '.join(str(p) for p in discovered_pts)}")
+def main():
+    """Run the interactive monitor-plot session."""
+    path = monitor_dir(sys.argv[1] if len(sys.argv) > 1 else os.getcwd())
 
-num_monitor_pts = get_int("Number of monitor points to plot",
-                          max(discovered_pts) if discovered_pts else 5)
-sample_factor = get_int("Sample factor (plot every nth point)", 10)
-plt_pts = get_yes_no("Plot monitor points?", 'y')
-plt_bulk = get_yes_no("Plot bulk/change history?", 'y')
-display_plots = get_yes_no("Display plots interactively?", 'n')
-auto_ylim = get_yes_no("Auto-limit y-axis range for diverged data?", 'y')
-avg_window = get_int("Running average window size (1 = off)", 0)
+    print('='*100)
+    print(f'Plotting monitor points from: {path}')
+    print('='*100)
 
-print("-" * 100)
-print()
+    # Get configuration from user
+    print("\nConfiguration:")
+    print("-" * 100)
 
-pt_files = [f'domain1_monitor_pt{i}_flow.dat' for i in range(1, num_monitor_pts + 1)]
-blk_files = ['domain1_monitor_metrics_history.log', 'domain1_monitor_change_history.log']
+    discovered_pts = sorted(
+        int(m.group(1))
+        for m in (re.match(r'domain\d+_monitor_pt(\d+)_flow\.dat$', f)
+                  for f in (os.listdir(path) if os.path.isdir(path) else []))
+        if m
+    )
+    if discovered_pts:
+        print(f"Found monitor points: {', '.join(str(p) for p in discovered_pts)}")
 
-# ====================================================================================================================================================
+    num_monitor_pts = get_int("Number of monitor points to plot",
+                              max(discovered_pts) if discovered_pts else 5)
+    sample_factor = get_int("Sample factor (plot every nth point)", 10)
+    plt_pts = get_yes_no("Plot monitor points?", 'y')
+    plt_bulk = get_yes_no("Plot bulk/change history?", 'y')
+    display_plots = get_yes_no("Display plots interactively?", 'n')
+    auto_ylim = get_yes_no("Auto-limit y-axis range for diverged data?", 'y')
+    avg_window = get_int("Running average window size (1 = off)", 0)
 
-if plt_pts:
-    for file in pt_files:
-        file_path = os.path.join(path, file)
-        if not os.path.isfile(file_path):
-            continue
+    print("-" * 100)
+    print()
 
-        data, columns = load_monitor_data(file_path, sample=sample_factor)
-        if data.size == 0:
-            print(f"Skipping {file}: no valid data after filtering.")
-            continue
+    pt_files = [f'domain1_monitor_pt{i}_flow.dat' for i in range(1, num_monitor_pts + 1)]
+    blk_files = ['domain1_monitor_metrics_history.log', 'domain1_monitor_change_history.log']
 
-        print(f'Plotting {len(data)} points for {file}...')
-        lookup = column_lookup(columns)
-        time = pick(data, lookup, 't', 'time')
-        if time is None:
-            time = data[:, 1] if data.shape[1] > 1 else data[:, 0]
+    # ====================================================================================================================================================
 
-        # The header names time 't' and temperature 'T', which differ only by
-        # case, so temperature is matched case-sensitively.
-        temp_index = next((i for i, n in enumerate(columns) if n.strip() == 'T'), None)
-        panels = [
-            ('u-velocity', [('u-velocity', pick(data, lookup, 'u'))]),
-            ('v-velocity', [('v-velocity', pick(data, lookup, 'v'))]),
-            ('w-velocity', [('w-velocity', pick(data, lookup, 'w'))]),
-            ('Pressure', [('pressure', pick(data, lookup, 'p'))]),
-            ('Pressure Correction', [('press. corr.', pick(data, lookup, 'phi'))]),
-            ('Temperature', [('temperature',
-                              data[:, temp_index] if temp_index is not None else None)]),
-        ]
+    if plt_pts:
+        for file in pt_files:
+            file_path = os.path.join(path, file)
+            if not os.path.isfile(file_path):
+                continue
 
-        out = os.path.join(path, file.replace('domain1_monitor_', '').replace('.dat', '_plot.png'))
-        plot_panels(panels, time, f'{file} - Monitor Point Data', out,
-                    display_plots, auto_ylim, avg_window)
+            data, columns = load_monitor_data(file_path, sample=sample_factor)
+            if data.size == 0:
+                print(f"Skipping {file}: no valid data after filtering.")
+                continue
 
-if plt_bulk:
-    for file in blk_files:
-        file_path = os.path.join(path, file)
-        if not os.path.isfile(file_path):
-            continue
+            print(f'Plotting {len(data)} points for {file}...')
+            lookup = column_lookup(columns)
+            time = pick(data, lookup, 't', 'time')
+            if time is None:
+                time = data[:, 1] if data.shape[1] > 1 else data[:, 0]
 
-        data, columns = load_monitor_data(file_path, sample=sample_factor)
-        if data.size == 0:
-            print(f"Skipping {file}: no valid data after filtering.")
-            continue
-
-        lookup = column_lookup(columns)
-        time = pick(data, lookup, 'time')
-        if time is None:
-            time = data[:, 0]
-
-        if 'metrics_history' in file:
+            # The header names time 't' and temperature 'T', which differ only by
+            # case, so temperature is matched case-sensitively.
+            temp_index = next((i for i, n in enumerate(columns) if n.strip() == 'T'), None)
             panels = [
-                ('Mass conservation', [
-                    ('global balance', pick(data, lookup, 'global mass balance')),
-                    ('interior', pick(data, lookup, 'max. mass conservation (interior)')),
-                    ('inlet', pick(data, lookup, 'max. mass conservation (inlet)')),
-                    ('outlet', pick(data, lookup, 'max. mass conservation (outlet)')),
-                ]),
-                ('Kinetic energy', [
-                    ('total kinetic energy', pick(data, lookup, 'total kinetic energy')),
-                ]),
-                ('Pressure', [
-                    ('mean dpdx', pick(data, lookup, 'mean dpdx')),
-                    ('global pressure drop', pick(data, lookup, 'global pressure drop')),
-                ]),
-                ('Bulk velocity', [
-                    ('qx', pick(data, lookup, 'bulk velocity qx')),
-                    ('qy', pick(data, lookup, 'bulk velocity qy')),
-                    ('qz', pick(data, lookup, 'bulk velocity qz')),
-                ]),
-                ('Bulk mass flux', [
-                    ('gx', pick(data, lookup, 'bulk mass flux gx')),
-                    ('gy', pick(data, lookup, 'bulk mass flux gy')),
-                    ('gz', pick(data, lookup, 'bulk mass flux gz')),
-                ]),
-                ('Bulk enthalpy', [
-                    ('bulk enthalpy', pick(data, lookup, 'bulk enthalpy')),
-                ]),
-                ('Bulk temperature', [
-                    ('bulk temperature', pick(data, lookup, 'bulk temperature')),
-                ]),
+                ('u-velocity', [('u-velocity', pick(data, lookup, 'u'))]),
+                ('v-velocity', [('v-velocity', pick(data, lookup, 'v'))]),
+                ('w-velocity', [('w-velocity', pick(data, lookup, 'w'))]),
+                ('Pressure', [('pressure', pick(data, lookup, 'p'))]),
+                ('Pressure Correction', [('press. corr.', pick(data, lookup, 'phi'))]),
+                ('Temperature', [('temperature',
+                                  data[:, temp_index] if temp_index is not None else None)]),
             ]
-            title = 'Bulk Quantities'
-        else:
-            panels = [
-                ('Mass residual', [
-                    ('bulk', pick(data, lookup, 'mass residual (bulk)')),
-                    ('inlet', pick(data, lookup, 'mass residual (inlet)')),
-                    ('outlet', pick(data, lookup, 'mass residual (outlet)')),
-                ]),
-                ('Mass flux imbalance', [
-                    ('global', pick(data, lookup, 'global mass flux imbalance')),
-                ]),
-                ('Poisson diagnostics', [
-                    ('compatibility defect', pick(data, lookup, 'Poisson compatibility defect')),
-                    ('zero-mode projection', pick(data, lookup, 'Poisson zero-mode projection')),
-                ]),
-                ('Total mass', [
-                    ('total mass', pick(data, lookup, 'total mass')),
-                ]),
-                ('Mass drift', [
-                    ('drift from run start', pick(data, lookup, 'total mass drift')),
-                ]),
-                ('KE change rate', [
-                    ('kinetic energy change rate', pick(data, lookup, 'kinetic energy change rate')),
-                ]),
-            ]
-            title = 'Change History'
 
-        out = os.path.join(path, file.replace('domain1_monitor_', '').replace('.log', '_plot.png'))
-        plot_panels(panels, time, title, out, display_plots, auto_ylim, avg_window)
+            out = os.path.join(path, file.replace('domain1_monitor_', '').replace('.dat', '_plot.png'))
+            plot_panels(panels, time, f'{file} - Monitor Point Data', out,
+                        display_plots, auto_ylim, avg_window)
 
-print('='*100)
-print(f'All plots saved to: {path}')
-print('='*100)
+    if plt_bulk:
+        for file in blk_files:
+            file_path = os.path.join(path, file)
+            if not os.path.isfile(file_path):
+                continue
+
+            data, columns = load_monitor_data(file_path, sample=sample_factor)
+            if data.size == 0:
+                print(f"Skipping {file}: no valid data after filtering.")
+                continue
+
+            lookup = column_lookup(columns)
+            time = pick(data, lookup, 'time')
+            if time is None:
+                time = data[:, 0]
+
+            if 'metrics_history' in file:
+                panels = [
+                    ('Mass conservation', [
+                        ('global balance', pick(data, lookup, 'global mass balance')),
+                        ('interior', pick(data, lookup, 'max. mass conservation (interior)')),
+                        ('inlet', pick(data, lookup, 'max. mass conservation (inlet)')),
+                        ('outlet', pick(data, lookup, 'max. mass conservation (outlet)')),
+                    ]),
+                    ('Kinetic energy', [
+                        ('total kinetic energy', pick(data, lookup, 'total kinetic energy')),
+                    ]),
+                    ('Pressure', [
+                        ('mean dpdx', pick(data, lookup, 'mean dpdx')),
+                        ('global pressure drop', pick(data, lookup, 'global pressure drop')),
+                    ]),
+                    ('Bulk velocity', [
+                        ('qx', pick(data, lookup, 'bulk velocity qx')),
+                        ('qy', pick(data, lookup, 'bulk velocity qy')),
+                        ('qz', pick(data, lookup, 'bulk velocity qz')),
+                    ]),
+                    ('Bulk mass flux', [
+                        ('gx', pick(data, lookup, 'bulk mass flux gx')),
+                        ('gy', pick(data, lookup, 'bulk mass flux gy')),
+                        ('gz', pick(data, lookup, 'bulk mass flux gz')),
+                    ]),
+                    ('Bulk enthalpy', [
+                        ('bulk enthalpy', pick(data, lookup, 'bulk enthalpy')),
+                    ]),
+                    ('Bulk temperature', [
+                        ('bulk temperature', pick(data, lookup, 'bulk temperature')),
+                    ]),
+                ]
+                title = 'Bulk Quantities'
+            else:
+                panels = [
+                    ('Mass residual', [
+                        ('bulk', pick(data, lookup, 'mass residual (bulk)')),
+                        ('inlet', pick(data, lookup, 'mass residual (inlet)')),
+                        ('outlet', pick(data, lookup, 'mass residual (outlet)')),
+                    ]),
+                    ('Mass flux imbalance', [
+                        ('global', pick(data, lookup, 'global mass flux imbalance')),
+                    ]),
+                    ('Poisson diagnostics', [
+                        ('compatibility defect', pick(data, lookup, 'Poisson compatibility defect')),
+                        ('zero-mode projection', pick(data, lookup, 'Poisson zero-mode projection')),
+                    ]),
+                    ('Total mass', [
+                        ('total mass', pick(data, lookup, 'total mass')),
+                    ]),
+                    ('Mass drift', [
+                        ('drift from run start', pick(data, lookup, 'total mass drift')),
+                    ]),
+                    ('KE change rate', [
+                        ('kinetic energy change rate', pick(data, lookup, 'kinetic energy change rate')),
+                    ]),
+                ]
+                title = 'Change History'
+
+            out = os.path.join(path, file.replace('domain1_monitor_', '').replace('.log', '_plot.png'))
+            plot_panels(panels, time, title, out, display_plots, auto_ylim, avg_window)
+
+    print('='*100)
+    print(f'All plots saved to: {path}')
+    print('='*100)
+
+
+
+if __name__ == '__main__':
+    main()

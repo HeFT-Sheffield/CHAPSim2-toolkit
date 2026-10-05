@@ -289,30 +289,15 @@ class ConsoleConsumer:
 
 
 # =====================================================================================
-# Monitor-points helper functions (copied to avoid importing the module which runs
-# global-level code at import time)
+# Monitor-points plotting helpers.
+#
+# Reading and column selection come from monitor_points itself, so the GUI and
+# the standalone script cannot drift apart on the file format again — a copy of
+# the reader here is what left this tab plotting mass residuals labelled as bulk
+# temperature. Only these backend-agnostic drawing helpers are kept local,
+# because the script's versions draw onto pyplot figures and the GUI embeds its
+# own Figure.
 # =====================================================================================
-
-def _mp_load(file_path, skiprows, max_val=1e5, sample=1):
-    try:
-        with open(file_path, 'r') as f:
-            for _ in range(skiprows):
-                f.readline()
-            lines = f if sample <= 1 else (
-                line for i, line in enumerate(f) if i % sample == 0
-            )
-            data = np.loadtxt(lines, dtype=np.float64)
-    except Exception:
-        return np.empty((0, 0))
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    if data.size == 0:
-        return np.empty((0, 0))
-    finite = np.all(np.isfinite(data), axis=1)
-    within = (np.all(np.abs(data[:, 1:]) <= max_val, axis=1)
-              if data.shape[1] > 1 else np.ones(data.shape[0], dtype=bool))
-    return data[finite & within]
-
 
 def _mp_running_avg(data, window):
     if window <= 1:
@@ -1667,12 +1652,19 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
     # ------ Run ----------------------------------------------------------------------
 
     def _run(self):
+        import monitor_points as mpts
+
         path = self._path.get().strip()
         if not path:
-            messagebox.showwarning('No path', 'Select the data directory.')
+            messagebox.showwarning('No path', 'Select the case or monitor folder.')
             return
-        if not path.endswith('/'):
-            path += '/'
+        # Accept the case folder as well as 3_monitor, like every other tab.
+        path = mpts.monitor_dir(path)
+        if not os.path.isdir(path):
+            messagebox.showwarning('No such folder', f'Not a directory:\n{path}')
+            return
+        self._path.set(path)
+        path += '/'
 
         self._clear_console()
 
@@ -1695,34 +1687,47 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                         if not os.path.exists(fpath):
                             self._log(f'Not found: {fname}')
                             continue
-                        data = _mp_load(fpath, skiprows=3, sample=sample)
+                        data, cols = mpts.load_monitor_data(fpath, sample=sample)
                         if data.size == 0:
                             self._log(f'No valid data in {fname}')
                             continue
                         self._log(f'Plotting {len(data)} points for {fname}…')
 
-                        t = data[:, 1]
-                        u, v, w = data[:, 2], data[:, 3], data[:, 4]
-                        p, phi = data[:, 5], data[:, 6]
-                        T = data[:, 7] if (thermo and data.shape[1] > 7) else None
+                        # Columns come from the file's own header, so a monitor
+                        # file that gains or loses one still plots the right
+                        # quantity (see monitor_points.load_monitor_data).
+                        lk = mpts.column_lookup(cols)
+                        t = mpts.pick(data, lk, 't', 'time')
+                        if t is None:
+                            t = data[:, 1] if data.shape[1] > 1 else data[:, 0]
+                        u = mpts.pick(data, lk, 'u')
+                        v = mpts.pick(data, lk, 'v')
+                        w = mpts.pick(data, lk, 'w')
+                        p = mpts.pick(data, lk, 'p')
+                        phi = mpts.pick(data, lk, 'phi')
+                        # 'T' and 't' differ only by case; match temperature exactly.
+                        ti = next((k for k, n in enumerate(cols) if n.strip() == 'T'), None)
+                        T = data[:, ti] if (thermo and ti is not None) else None
 
-                        scalar_fields = [('pressure', p, 'C3'),
-                                         ('press. corr.', phi, 'C4')]
-                        if T is not None:
-                            scalar_fields.append(('temperature', T, 'C5'))
+                        scalar_fields = [(lbl, arr, col) for lbl, arr, col in
+                                         [('pressure', p, 'C3'), ('press. corr.', phi, 'C4'),
+                                          ('temperature', T, 'C5')] if arr is not None]
 
                         n_sub = 1 + len(scalar_fields)
                         fig = Figure(figsize=(10, 3 * n_sub))
                         axes = fig.subplots(n_sub, 1, sharex=True)
 
                         # Combined velocity subplot
-                        for lbl, arr, col in [('u', u, 'C0'), ('v', v, 'C1'), ('w', w, 'C2')]:
+                        vels = [(lbl, arr, col) for lbl, arr, col in
+                                [('u', u, 'C0'), ('v', v, 'C1'), ('w', w, 'C2')]
+                                if arr is not None]
+                        for lbl, arr, col in vels:
                             _mp_plot_avg(axes[0], t, arr, lbl, col, window)
                         axes[0].set_ylabel('Velocity')
                         axes[0].legend(fontsize=7)
                         axes[0].grid(True, alpha=0.4)
-                        if auto_ylim:
-                            _mp_apply_ylim(axes[0], np.concatenate([u, v, w]))
+                        if auto_ylim and vels:
+                            _mp_apply_ylim(axes[0], np.concatenate([a for _, a, _ in vels]))
 
                         for ax, (lbl, arr, col) in zip(axes[1:], scalar_fields):
                             _mp_plot_avg(ax, t, arr, lbl, col, window)
@@ -1747,82 +1752,102 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                         if not os.path.exists(fpath):
                             self._log(f'Not found: {fname}')
                             continue
-                        data = _mp_load(fpath, skiprows=2, sample=sample)
+                        data, cols = mpts.load_monitor_data(fpath, sample=sample)
                         if data.size == 0:
                             continue
+                        lk = mpts.column_lookup(cols)
+                        t = mpts.pick(data, lk, 'time')
+                        if t is None:
+                            t = data[:, 0]
 
+                        # Panels are selected by column name, not position:
+                        # these files have gained columns more than once, and
+                        # a fixed index silently plots the wrong quantity.
                         if 'metrics' in fname:
-                            t = data[:, 0]
-                            MKE, qx = data[:, 1], data[:, 2]
-                            has_th = thermo and data.shape[1] > 5
-                            if has_th:
-                                gx, T, h = data[:, 3], data[:, 4], data[:, 5]
-                            n_sub = 4 if has_th else 2
-                            fig = Figure(figsize=(10, 3 * n_sub))
-                            axes = fig.subplots(n_sub, 1, sharex=True)
-                            _mp_plot_avg(axes[0], t, MKE, 'Mean Kinetic Energy', 'C0', window)
-                            axes[0].set_ylabel('MKE')
-                            axes[0].legend(fontsize=7); axes[0].grid(True, alpha=0.4)
-                            if auto_ylim: _mp_apply_ylim(axes[0], MKE)
-                            _mp_stats_box(axes[0], MKE)
+                            panels = [
+                                ('Mass conservation', [
+                                    ('global balance', mpts.pick(data, lk, 'global mass balance')),
+                                    ('interior', mpts.pick(data, lk, 'max. mass conservation (interior)')),
+                                    ('inlet', mpts.pick(data, lk, 'max. mass conservation (inlet)')),
+                                    ('outlet', mpts.pick(data, lk, 'max. mass conservation (outlet)')),
+                                ]),
+                                ('Kinetic energy', [
+                                    ('total kinetic energy', mpts.pick(data, lk, 'total kinetic energy')),
+                                ]),
+                                ('Pressure', [
+                                    ('mean dpdx', mpts.pick(data, lk, 'mean dpdx')),
+                                    ('global pressure drop', mpts.pick(data, lk, 'global pressure drop')),
+                                ]),
+                                ('Bulk velocity', [
+                                    ('qx', mpts.pick(data, lk, 'bulk velocity qx')),
+                                    ('qy', mpts.pick(data, lk, 'bulk velocity qy')),
+                                    ('qz', mpts.pick(data, lk, 'bulk velocity qz')),
+                                ]),
+                                ('Bulk mass flux', [
+                                    ('gx', mpts.pick(data, lk, 'bulk mass flux gx')),
+                                    ('gy', mpts.pick(data, lk, 'bulk mass flux gy')),
+                                    ('gz', mpts.pick(data, lk, 'bulk mass flux gz')),
+                                ]),
+                                ('Bulk enthalpy', [
+                                    ('bulk enthalpy', mpts.pick(data, lk, 'bulk enthalpy')),
+                                ]),
+                                ('Bulk temperature', [
+                                    ('bulk temperature', mpts.pick(data, lk, 'bulk temperature')),
+                                ]),
+                            ]
+                            title, key = 'Bulk Quantities', 'Bulk Quantities'
+                        else:
+                            panels = [
+                                ('Mass residual', [
+                                    ('bulk', mpts.pick(data, lk, 'mass residual (bulk)')),
+                                    ('inlet', mpts.pick(data, lk, 'mass residual (inlet)')),
+                                    ('outlet', mpts.pick(data, lk, 'mass residual (outlet)')),
+                                ]),
+                                ('Mass flux imbalance', [
+                                    ('global', mpts.pick(data, lk, 'global mass flux imbalance')),
+                                ]),
+                                ('Poisson diagnostics', [
+                                    ('compatibility defect',
+                                     mpts.pick(data, lk, 'Poisson compatibility defect')),
+                                    ('zero-mode projection',
+                                     mpts.pick(data, lk, 'Poisson zero-mode projection')),
+                                ]),
+                                ('Total mass', [('total mass', mpts.pick(data, lk, 'total mass'))]),
+                                ('Mass drift', [('drift from run start',
+                                                 mpts.pick(data, lk, 'total mass drift'))]),
+                                ('KE change rate', [('kinetic energy change rate',
+                                                     mpts.pick(data, lk, 'kinetic energy change rate'))]),
+                            ]
+                            title, key = 'Change History', 'Change History'
 
-                            _mp_plot_avg(axes[1], t, qx, 'Bulk Velocity', 'C1', window)
-                            if has_th:
-                                _mp_plot_avg(axes[1], t, gx, 'ρ·U_bulk', 'C2', window)
-                            axes[1].set_ylabel('Velocity')
-                            axes[1].legend(fontsize=7); axes[1].grid(True, alpha=0.4)
+                        # Drop panels whose columns this run did not write
+                        # (isothermal cases have no bulk enthalpy, and so on).
+                        panels = [(yl, [(l, a) for l, a in series if a is not None])
+                                  for yl, series in panels]
+                        panels = [pn for pn in panels if pn[1]]
+                        if not panels:
+                            self._log(f'No plottable columns in {fname}')
+                            continue
+
+                        fig = Figure(figsize=(10, 3 * len(panels)))
+                        axs = fig.subplots(len(panels), 1, sharex=True, squeeze=False)[:, 0]
+                        for ax, (ylabel, series) in zip(axs, panels):
+                            for k, (lbl, arr) in enumerate(series):
+                                _mp_plot_avg(ax, t, arr, lbl, f'C{k}', window)
+                            ax.set_ylabel(ylabel)
+                            ax.legend(fontsize=7)
+                            ax.grid(True, alpha=0.4)
                             if auto_ylim:
-                                _mp_apply_ylim(axes[1], np.concatenate([qx, gx]) if has_th else qx)
-                            _mp_stats_box(axes[1], qx)
-
-                            if has_th:
-                                _mp_plot_avg(axes[2], t, T, 'Bulk Temperature', 'C3', window)
-                                axes[2].set_ylabel('Bulk T')
-                                axes[2].legend(fontsize=7); axes[2].grid(True, alpha=0.4)
-                                if auto_ylim: _mp_apply_ylim(axes[2], T)
-                                _mp_stats_box(axes[2], T)
-
-                                _mp_plot_avg(axes[3], t, h, 'Bulk Enthalpy', 'C4', window)
-                                axes[3].set_ylabel('Bulk h')
-                                axes[3].legend(fontsize=7); axes[3].grid(True, alpha=0.4)
-                                if auto_ylim: _mp_apply_ylim(axes[3], h)
-                                _mp_stats_box(axes[3], h)
-                                axes[3].set_xlabel('Time')
-                            else:
-                                axes[1].set_xlabel('Time')
-
-                            fig.suptitle('Bulk Quantities', fontsize=12)
-                            fig.tight_layout()
-                            if save:
-                                out = f'{path}{fname.replace("domain1_monitor_","").replace(".log","_plot")}.png'
-                                fig.savefig(out, dpi=150, bbox_inches='tight')
-                            figures.append(('Bulk Quantities', fig))
-
-                        elif 'change' in fname:
-                            t = data[:, 0]
-                            mass_cons = data[:, 1]
-                            mass_rt = data[:, 4]
-                            ke_rt = data[:, 5]
-                            fig = Figure(figsize=(10, 9))
-                            axes = fig.subplots(3, 1, sharex=True)
-                            for ax, arr, lbl, col in zip(
-                                axes,
-                                [mass_cons, mass_rt, ke_rt],
-                                ['Mass Conservation', 'Mass Change Rate', 'KE Change Rate'],
-                                ['C0', 'C1', 'C2'],
-                            ):
-                                _mp_plot_avg(ax, t, arr, lbl, col, window)
-                                ax.set_ylabel(lbl)
-                                ax.legend(fontsize=7); ax.grid(True, alpha=0.4)
-                                if auto_ylim: _mp_apply_ylim(ax, arr)
-                                _mp_stats_box(ax, arr)
-                            axes[2].set_xlabel('Time')
-                            fig.suptitle('Change History', fontsize=12)
-                            fig.tight_layout()
-                            if save:
-                                out = f'{path}{fname.replace("domain1_monitor_","").replace(".log","_plot")}.png'
-                                fig.savefig(out, dpi=150, bbox_inches='tight')
-                            figures.append(('Change History', fig))
+                                _mp_apply_ylim(ax, np.concatenate([a for _, a in series]))
+                            _mp_stats_box(ax, series[0][1])
+                        axs[-1].set_xlabel('Time')
+                        fig.suptitle(title, fontsize=12)
+                        fig.tight_layout()
+                        if save:
+                            out = (f'{path}'
+                                   f'{fname.replace("domain1_monitor_","").replace(".log","_plot")}.png')
+                            fig.savefig(out, dpi=150, bbox_inches='tight')
+                        figures.append((key, fig))
 
                 self.after(0, lambda: self._update_figs(figures))
                 self._log('Done.')
