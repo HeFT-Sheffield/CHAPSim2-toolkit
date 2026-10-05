@@ -92,6 +92,9 @@ class Config:
     ux_velocity_log_ref_on: bool
     mhd_NK_ref_on: bool
     mkm180_ch_ref_on: bool
+    #: Flow geometry: labels the wall-normal axis and, in the GUI, hides
+    #: controls a geometry has no meaning for.
+    geometry: str = 'channel'
     #: Where figures are written. Blank keeps the historical behaviour
     #: (folder_path when save_to_path is set, plus turb_stats_plots/).
     output_dir: str = ''
@@ -209,6 +212,7 @@ class Config:
             ux_velocity_log_ref_on=getattr(config_module, 'ux_velocity_log_ref_on', False),
             mhd_NK_ref_on=getattr(config_module, 'mhd_NK_ref_on', False),
             mkm180_ch_ref_on=getattr(config_module, 'mkm180_ch_ref_on', False),
+            geometry=getattr(config_module, 'geometry', 'channel'),
             output_dir=getattr(config_module, 'output_dir', ''),
             xdmf_data_type=getattr(config_module, 'xdmf_data_type', 'tsp_avg'),
             body_force_on=getattr(config_module, 'body_force_on', False),
@@ -2819,11 +2823,21 @@ class TurbulencePlotter:
             return f'{stat_label}, {context}' if context else stat_label
         return context if context else stat_label
 
+    #: Geometries whose wall-normal coordinate is a radius, not a y position.
+    _CYLINDRICAL_GEOMETRIES = ('pipe', 'annulus', 'annular')
+
     def _get_y_profile_xlabel(self) -> str:
-        """Return x-axis label for wall-normal profiles."""
+        """Return x-axis label for wall-normal profiles.
+
+        A pipe or annulus is solved in (x, r, theta), so its wall-normal
+        coordinate is the radius; captioning it 'y' misreports the geometry.
+        """
         if self.config.norm_y_to_y_plus:
             return '$y^+$'
-        return 'Distance from wall' if self.config.half_channel_plot else '$y$'
+        if self.config.half_channel_plot:
+            return 'Distance from wall'
+        geometry = str(getattr(self.config, 'geometry', '') or '').lower()
+        return '$r$' if geometry in self._CYLINDRICAL_GEOMETRIES else '$y$'
 
     def _get_stat_ylabel(self, stat_name: str, stat_label: str) -> str:
         """Return y-axis label matching enabled normalisation options."""

@@ -1011,6 +1011,7 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
             # Figures go where the user asked, not into their case folders.
             save_to_path=False,
             output_dir=v['output_dir'].get().strip(),
+            geometry=v['geometry'].get(),
             large_text_on=v['large_text_on'].get(),
             plot_name='',
             ux_velocity_log_ref_on=v['ux_velocity_log_ref_on'].get(),
