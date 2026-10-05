@@ -1708,11 +1708,23 @@ class BudgetComputer:
             'mhd':                 lambda d: op.compute_mhd_term(self.config.mag_field_direction, self.config.stuart_number, d, self.uiuj),
         }
 
+        # A term whose inputs the run did not write comes out identically
+        # zero. On a budget chart that reads as "negligible" rather than
+        # "not computed" - production cannot be zero in a sheared channel -
+        # so it is marked unavailable and the plotter leaves it out.
+        inputs_missing = bool(budget_comp.get('_missing'))
+
         for _flag, term_name, _label in self.enabled_terms:
             if term_name == 'balance':
                 continue
             result = _compute_fns[term_name](budget_comp)
             value = next(iter(result.values()))
+            if inputs_missing and value is not None:
+                array = np.asarray(value, dtype=float)
+                if array.size and not np.any(array):
+                    print(f"  {term_name}: not available for {case}, {timestep} "
+                          f"(its inputs are not in this run's output).")
+                    value = np.full(array.shape, np.nan)
             self.raw_results[term_name][(case, timestep)] = value
 
         balance_val = None
@@ -1720,8 +1732,11 @@ class BudgetComputer:
             if term_name == 'balance':
                 continue
             val = self.raw_results[term_name].get((case, timestep))
-            if val is not None:
-                balance_val = val if balance_val is None else balance_val + val
+            if val is None:
+                continue
+            if np.all(np.isnan(np.asarray(val, dtype=float))):
+                continue        # unavailable, not zero: leave it out of the sum
+            balance_val = val if balance_val is None else balance_val + val
         if balance_val is not None:
             self.raw_results['balance'][(case, timestep)] = balance_val
 

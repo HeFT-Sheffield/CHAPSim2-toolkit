@@ -193,3 +193,54 @@ def test_a_partly_finite_series_is_still_drawn():
     plotter._plot_line(ax, x, y, 'partly finite', 'C0', marker='o')
     assert len(ax.lines) == 1
     fig.canvas.draw()
+
+
+# ---------------------------------------------------------------------------
+# Which numpy axis holds which direction. The gradient helpers used to decide
+# this from the averaging flags, which say what the loader was asked to do,
+# not what shape the data arrived in - tsp_avg output is already 2-D with both
+# flags off, so the body-force and budget gradients indexed axis 2 of a 2-D
+# array and raised AxisError.
+# ---------------------------------------------------------------------------
+
+def test_axis_map_for_each_data_shape():
+    cases = [
+        ((4, 8, 6), False, False, {'x': 2, 'y': 1, 'z': 0}),   # full 3-D
+        ((8, 6),    False, False, {'x': 1, 'y': 0, 'z': None}),  # tsp_avg plane
+        ((8, 6),    False, True,  {'x': 1, 'y': 0, 'z': None}),  # z averaged here
+        ((4, 8),    True,  False, {'x': None, 'y': 1, 'z': 0}),  # x averaged here
+        ((8,),      True,  True,  {'x': None, 'y': 0, 'z': None}),
+    ]
+    for shape, average_x, average_z, expected in cases:
+        got = op.field_axes(np.zeros(shape), average_x, average_z)
+        assert got == expected, (shape, average_x, average_z, got)
+
+
+def test_body_forces_accept_a_two_dimensional_plane():
+    """tsp_avg is the default input and is 2-D; this raised AxisError."""
+    ny, nx = 8, 6
+    y = np.linspace(-1.0, 1.0, ny)
+    data = {'pr': np.random.rand(ny, nx), 'f': np.ones((ny, nx)),
+            'j1': np.zeros((ny, nx)), 'j2': np.zeros((ny, nx)),
+            'j3': np.zeros((ny, nx))}
+    comp = op.compute_force_components(data, y, average_z=False, average_x=False)
+    assert comp['pr_grad'][0].shape == (ny, nx)      # d/dx
+    assert comp['pr_grad'][1].shape == (ny, nx)      # d/dy
+    assert np.all(comp['pr_grad'][2] == 0.0)         # z averaged away
+
+
+def test_body_forces_still_accept_a_three_dimensional_field():
+    nz, ny, nx = 4, 8, 6
+    y = np.linspace(-1.0, 1.0, ny)
+    data = {'pr': np.random.rand(nz, ny, nx), 'f': np.ones((nz, ny, nx))}
+    comp = op.compute_force_components(data, y, average_z=False, average_x=False)
+    assert all(g.shape == (nz, ny, nx) for g in comp['pr_grad'])
+
+
+def test_the_budget_reports_which_inputs_were_absent():
+    """A term built only from missing variables is not zero, it is
+    uncomputed, and the caller needs to be able to tell."""
+    comp = op.compute_budget_components({'u1': np.zeros((8, 6))},
+                                        np.linspace(-1.0, 1.0, 8))
+    assert 'dudx11' in comp['_missing']
+    assert 'u1' not in comp['_missing']

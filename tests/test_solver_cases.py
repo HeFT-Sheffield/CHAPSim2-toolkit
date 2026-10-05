@@ -8,7 +8,9 @@ Skipped when CHAPSim2 is not checked out alongside; point CHAPSIM2_TESTS
 at its tests directory to run them elsewhere.
 """
 
+import contextlib
 import glob
+import io
 import os
 
 import numpy as np
@@ -229,9 +231,6 @@ def test_periodicity_matches_the_case_names():
 def test_averaging_a_non_periodic_direction_is_reported():
     """Averaging x on an inlet/outlet case mixes the inlet with the outlet.
     It must not pass quietly."""
-    import contextlib
-    import io
-
     import turb_stats as ts
 
     inout = next((c for c in _require_cases()
@@ -254,9 +253,6 @@ def test_averaging_a_non_periodic_direction_is_reported():
 def test_a_group_absent_at_a_timestep_is_reported():
     """Thermo is written less often than flow; a dropped temperature
     profile should say why."""
-    import contextlib
-    import io
-
     import turb_stats as ts
 
     target = None
@@ -282,3 +278,68 @@ def test_a_group_absent_at_a_timestep_is_reported():
         loader.load_all()
     message = printed.getvalue()
     assert 'no thermo' in message and 'it exists at' in message, message
+
+
+def test_mhd_statistics_run_on_a_real_mhd_case():
+    """MHD was an advertised feature that had never been run end to end;
+    the body-force gradients raised AxisError on tsp_avg plane data."""
+    import turb_stats as ts
+
+    root = solver_tests_dir()
+    if root is None:
+        skip('CHAPSim2 test output not available (set CHAPSIM2_TESTS)')
+    case = next((c for c in _cases()
+                 if os.path.basename(c).startswith('MHD_')
+                 and ut.visu_catalogue(c, 'mhd').get('tsp_avg')), None)
+    if case is None:
+        skip('no MHD case with averaged output')
+
+    step = ut.visu_catalogue(case, 'mhd')['tsp_avg'][-1]
+    loader = ts.TurbulenceXDMFData(
+        os.path.dirname(case), [os.path.basename(case)], [step],
+        data_types=['tsp_avg'], average_x=False, average_z=False,
+        required_vars=None)
+    with contextlib.redirect_stdout(io.StringIO()):
+        loader.load_all()
+    loaded = loader.data[f'{os.path.basename(case)}_{step}']
+    for name in ('j1', 'j2', 'j3', 'jj11'):
+        assert name in loaded, f'{name} missing from {sorted(loaded)[:8]}'
+
+    # The gradients the body-force terms need, on 2-D plane data.
+    comp = op.compute_force_components(loaded, loader.y_coords,
+                                       average_z=False, average_x=False)
+    assert comp['pr_grad'][0] is not None
+
+
+def test_averaging_over_timesteps_is_the_mean_of_them():
+    import turb_stats as ts
+
+    root = solver_tests_dir()
+    if root is None:
+        skip('CHAPSim2 test output not available (set CHAPSIM2_TESTS)')
+    case = next((c for c in _cases()
+                 if len(ut.visu_catalogue(c, 'flow').get('tsp_avg') or []) >= 2), None)
+    if case is None:
+        skip('no case with two averaged timesteps')
+
+    name = os.path.basename(case)
+    parent = os.path.dirname(case)
+    steps = ut.visu_catalogue(case, 'flow')['tsp_avg'][-2:]
+
+    singles = {}
+    for step in steps:
+        loader = ts.TurbulenceXDMFData(parent, [name], [step], data_types=['tsp_avg'],
+                                       average_x=False, average_z=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            loader.load_all()
+        singles[step] = loader.data[f'{name}_{step}']['u1'].copy()
+
+    loader = ts.TurbulenceXDMFData(parent, [name], list(steps), data_types=['tsp_avg'],
+                                   average_x=False, average_z=False,
+                                   average_over_timesteps=True)
+    with contextlib.redirect_stdout(io.StringIO()):
+        loader.load_all()
+    assert loader.timesteps == ['avg']
+    averaged = loader.data[f'{name}_avg']['u1']
+    expected = sum(singles.values()) / len(singles)
+    assert np.allclose(averaged, expected)

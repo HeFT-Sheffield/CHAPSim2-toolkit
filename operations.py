@@ -371,6 +371,33 @@ def wall_side(ux_data):
     return 'lower'
 
 
+def field_axes(field, average_x=False, average_z=False):
+    """Which numpy axis each direction occupies in a statistics array.
+
+    Returns a dict mapping 'x', 'y' and 'z' to an axis number, or to None
+    where that direction has been averaged away.
+
+    The layout cannot be read off the averaging flags alone. They say what
+    the loader was asked to do, not what shape the data arrived in: tsp_avg
+    output is already averaged over its periodic direction by the solver, so
+    it is two-dimensional while both flags are off. Dispatch on ndim, and
+    use the flags only to tell the two possible 2-D layouts apart.
+
+        3-D (nz, ny, nx)   z=0, y=1, x=2
+        2-D (ny, nx)       y=0, x=1        z averaged out, or already averaged
+        2-D (nz, ny)       z=0, y=1        x averaged out
+        1-D (ny,)          y=0             both averaged out
+    """
+    ndim = getattr(field, 'ndim', 0)
+    if ndim >= 3:
+        return {'x': 2, 'y': 1, 'z': 0}
+    if ndim == 2:
+        if average_x and not average_z:
+            return {'x': None, 'y': 1, 'z': 0}
+        return {'x': 1, 'y': 0, 'z': None}
+    return {'x': None, 'y': 0, 'z': None}
+
+
 def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None, wall=None):
     """Compute wall shear stress from near-wall interpolated velocity points.
 
@@ -519,27 +546,26 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     def grad_x(field):
         if field is None:
             return None
-        if average_x:
+        axis = field_axes(field, average_x, average_z)['x']
+        if axis is None:
             return np.zeros_like(field)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, axis=1)
-        return np.gradient(field, axis=2)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     def grad_y(field):
         if field is None:
             return None
+        axis = field_axes(field, average_x, average_z)['y']
         if field.ndim == 1:
             return np.gradient(field, y_coords)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, y_coords, axis=0)
-        return np.gradient(field, y_coords, axis=1)  # 3D (nz, ny, nx)
+        return np.gradient(field, y_coords, axis=axis)
 
     def grad_z(field):
         if field is None:
             return None
-        if average_z:
+        axis = field_axes(field, average_x, average_z)['z']
+        if axis is None:
             return np.zeros_like(field)
-        return np.gradient(field, axis=0)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     def lap_y(field):
         """Second derivative in y on a stretched mesh."""
@@ -554,9 +580,12 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     # ------------------------------------------------------------------
     # Variable lookup (prefixes already stripped by reader)
     # ------------------------------------------------------------------
+    missing = set()
+
     def get_var(name):
         val = xdmf_data_dict.get(name, None)
         if val is None:
+            missing.add(name)
             print(f"WARNING: '{name}' is missing from the loaded data. "
                   f"Terms computed from it will be zero")
         return val
@@ -819,6 +848,10 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     # Output
     # ------------------------------------------------------------------
     return {
+        # Which requested variables the data did not carry. A term built
+        # only from these is not zero, it is uncomputed, and saying so is
+        # the difference between 'negligible' and 'not available' on a plot.
+        '_missing': missing,
         'U1': u1, 'U2': u2, 'U3': u3,
         'u_prime': u_prime_rms,
         'pr': pr,
@@ -1179,27 +1212,26 @@ def compute_force_components(xdmf_data_dict, y_coords, average_z=False, average_
     def grad_x(field):
         if field is None:
             return None
-        if average_x:
+        axis = field_axes(field, average_x, average_z)['x']
+        if axis is None:
             return np.zeros_like(field)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, axis=1)
-        return np.gradient(field, axis=2)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     def grad_y(field):
         if field is None:
             return None
+        axis = field_axes(field, average_x, average_z)['y']
         if field.ndim == 1:
             return np.gradient(field, y_coords)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, y_coords, axis=0)
-        return np.gradient(field, y_coords, axis=1)  # 3D (nz, ny, nx)
+        return np.gradient(field, y_coords, axis=axis)
 
     def grad_z(field):
         if field is None:
             return None
-        if average_z:
+        axis = field_axes(field, average_x, average_z)['z']
+        if axis is None:
             return np.zeros_like(field)
-        return np.gradient(field, axis=0)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     pr = get_var('pr')
     dens = get_var('f')
