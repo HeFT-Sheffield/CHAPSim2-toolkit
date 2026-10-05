@@ -351,6 +351,16 @@ class ConsolePanel(ttk.Frame):
         self._beacon.configure(text='')
 
 
+def find_app(widget):
+    """Return the App hosting ``widget``, or None when used standalone."""
+    w = widget
+    while w is not None:
+        if isinstance(w, App):
+            return w
+        w = getattr(w, 'master', None)
+    return None
+
+
 def find_console(widget):
     """Return the app-level ConsolePanel hosting ``widget``, or None.
 
@@ -364,6 +374,20 @@ def find_console(widget):
             return panel
         w = getattr(w, 'master', None)
     return None
+
+
+class CaseConsumer:
+    """Mixin for tabs that work on one CHAPSim2 case.
+
+    The five tabs want the case in three different shapes - a case folder, the
+    parent directory plus a case name, or the path of an input_chapsim.ini -
+    so the shared bar hands each one the case folder and lets it translate.
+    Tabs keep their own path field, so one can still be pointed elsewhere; the
+    bar just saves re-browsing in all of them.
+    """
+
+    def adopt_case(self, case_dir):
+        """Take up ``case_dir``. Overridden per tab; no-op by default."""
 
 
 class ConsoleConsumer:
@@ -490,7 +514,7 @@ def _mp_plot_avg(ax, t, d, label, color, window):
 # TURB STATS TAB
 # =====================================================================================
 
-class TurbStatsTab(ConsoleConsumer, ttk.Frame):
+class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -832,6 +856,27 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
         _update_thermal_mhd_visibility()
 
     # ------ Plot panel (right) -------------------------------------------------------
+
+    def adopt_case(self, case_dir):
+        """Take the shared case as parent directory plus one case name."""
+        parent, name = os.path.dirname(case_dir), os.path.basename(case_dir)
+        self.vars['folder_path'].set(parent)       # fires _scan_cases()
+        self._t_cases.delete('1.0', tk.END)
+        self._t_cases.insert('1.0', name)
+        import utils as ut
+        steps = ut.find_available_timesteps(case_dir)
+        profiles = sorted({t for _, t in ut.find_profile_bundles(case_dir)}, key=int)
+        latest = (steps or profiles)[-1:] 
+        if latest:
+            self._t_timesteps.delete('1.0', tk.END)
+            self._t_timesteps.insert('1.0', latest[0])
+        # The geometry drives the axis label and which controls apply.
+        lowered = name.lower()
+        for key, geom in (('pipe', 'pipe'), ('annular', 'annulus'),
+                          ('duct', 'duct'), ('channel', 'channel')):
+            if key in lowered:
+                self.vars['geometry'].set(geom)
+                break
 
     def _scan_cases(self):
         """Report what the chosen folder actually contains.
@@ -1361,7 +1406,7 @@ COLORMAPS = ['RdBu_r', 'viridis', 'plasma', 'inferno', 'magma',
              'coolwarm', 'bwr', 'seismic', 'jet', 'turbo', 'gray']
 
 
-class SliceTab(ConsoleConsumer, ttk.Frame):
+class SliceTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
 
     #: Data types this tab can display, in the order the combo offers them.
     DTYPES = ('t_avg', 'tsp_avg', 'inst', '2d_slice')
@@ -1549,6 +1594,11 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
         ttk.Button(r5, text='Save…', command=self._save_plot).pack(side='left', padx=2)
 
     # ------ Helpers ------------------------------------------------------------------
+
+    def adopt_case(self, case_dir):
+        """Take the shared case: set the folder and re-scan what it offers."""
+        self._case_path.set(case_dir)
+        self._scan()
 
     def _browse(self):
         d = filedialog.askdirectory(title='Select case folder (containing 2_visu/)')
@@ -1883,7 +1933,7 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
 # MONITOR POINTS TAB
 # =====================================================================================
 
-class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
+class MonitorPointsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -1978,6 +2028,10 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
         self._fig_lb.bind('<<ListboxSelect>>', self._on_select)
 
     # ------ Helpers ------------------------------------------------------------------
+
+    def adopt_case(self, case_dir):
+        """Take the shared case; _run() resolves 3_monitor under it."""
+        self._path.set(case_dir)
 
     def _on_select(self, _event=None):
         sel = self._fig_lb.curselection()
@@ -2443,7 +2497,7 @@ class Visu3DPanel(ttk.Frame):
             self._plotter.screenshot(filename=path)
 
 
-class TurbVisuTab(ConsoleConsumer, ttk.Frame):
+class TurbVisuTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
 
     #: Volume rendering needs a full 3-D field, so only these two.
     DTYPES = ('inst', 't_avg')
@@ -2638,6 +2692,11 @@ class TurbVisuTab(ConsoleConsumer, ttk.Frame):
         ttk.Button(s, text='Save screenshot', command=self._save_screenshot).pack(anchor='w', pady=2)
 
     # ------ Helpers ------------------------------------------------------------------
+
+    def adopt_case(self, case_dir):
+        """Take the shared case: set the folder and re-scan what it offers."""
+        self._case_path.set(case_dir)
+        self._scan()
 
     def _browse(self):
         d = filedialog.askdirectory(title='Select case folder (containing 2_visu/)')
@@ -3056,7 +3115,7 @@ class LinkedSlider(ttk.Frame):
             self._syncing = False
 
 
-class MeshAnalysisTab(ttk.Frame):
+class MeshAnalysisTab(CaseConsumer, ttk.Frame):
     """Interactive pre-run mesh resolution assessment.
 
     Wraps mesh_analysis.py: the mesh parameters are driven from sliders, the
@@ -3365,6 +3424,13 @@ class MeshAnalysisTab(ttk.Frame):
 
     # ------ File actions -------------------------------------------------------------
 
+    def adopt_case(self, case_dir):
+        """Take the shared case: load its input_chapsim.ini if there is one."""
+        ini = os.path.join(case_dir, 'input_chapsim.ini')
+        if os.path.isfile(ini):
+            self._path.set(ini)
+            self._load()
+
     def _browse(self):
         p = filedialog.askopenfilename(
             title='Select input_chapsim.ini',
@@ -3620,8 +3686,15 @@ class App(ttk.Window):
         self.console = ConsolePanel(self)
         self.console.pack(side='right', fill='y')
 
-        nb = ttk.Notebook(self)
-        nb.pack(side='left', fill='both', expand=True)
+        # One case bar for the whole window: the tabs each need the case in a
+        # different shape, so they translate it rather than share a variable.
+        body = ttk.Frame(self)
+        body.pack(side='left', fill='both', expand=True)
+        self.case_path = tk.StringVar()
+        self._build_case_bar(body)
+
+        nb = ttk.Notebook(body)
+        nb.pack(side='top', fill='both', expand=True)
         self._nb = nb
         self._holders = []
 
@@ -3642,8 +3715,77 @@ class App(ttk.Window):
         sys.stdout = TextRedirect(self.console)
         sys.stderr = TextRedirect(self.console)
 
+    def _build_case_bar(self, parent):
+        bar = ttk.Frame(parent)
+        bar.pack(side='top', fill='x', padx=6, pady=(6, 2))
+        ttk.Label(bar, text='Case:').pack(side='left')
+        ttk.Entry(bar, textvariable=self.case_path).pack(
+            side='left', fill='x', expand=True, padx=4)
+        ttk.Button(bar, text='Browse…', width=9,
+                   command=self._browse_case).pack(side='left')
+        ttk.Button(bar, text='Apply to all tabs', width=17,
+                   command=self._apply_case).pack(side='left', padx=4)
+        self._case_summary = ttk.Label(parent, text='No case selected.',
+                                       foreground='grey', wraplength=1200,
+                                       justify='left')
+        self._case_summary.pack(side='top', fill='x', padx=10)
+
+    def _browse_case(self):
+        d = filedialog.askdirectory(title='Select a CHAPSim2 case folder')
+        if d:
+            self.case_path.set(d)
+            self._apply_case()
+
+    def _apply_case(self):
+        """Hand the case to every tab, realising each one so it takes effect."""
+        import utils as ut
+        case = ut.resolve_case_dirs(self.case_path.get())['case'] \
+            if self.case_path.get().strip() else ''
+        if not case or not os.path.isdir(case):
+            self._case_summary.configure(text='Not a directory.', foreground='orange')
+            return
+        self.case_path.set(case)
+        self._case_summary.configure(text=self._describe(case), foreground='')
+        for holder in self._holders:
+            holder.realise()
+            tab = holder.inner
+            if isinstance(tab, CaseConsumer):
+                try:
+                    tab.adopt_case(case)
+                except Exception as exc:
+                    print(f'{type(tab).__name__}: could not adopt case: {exc}')
+
+    @staticmethod
+    def _describe(case):
+        import utils as ut
+        dirs = ut.resolve_case_dirs(case)
+        steps = ut.find_available_timesteps(case)
+        bits = [os.path.basename(case)]
+        bits.append(f"timesteps: {', '.join(steps)}" if steps else 'no visualisation output')
+        if os.path.isfile(os.path.join(case, 'input_chapsim.ini')):
+            bits.append('input_chapsim.ini')
+        if os.path.isdir(dirs['monitor']):
+            bits.append('3_monitor')
+        profiles = ut.find_profile_bundles(case)
+        if profiles:
+            bits.append(f'{len(profiles)} profile table(s)')
+        return '   |   '.join(bits)
+
     def _on_tab_changed(self, _event=None):
         self._realise_current()
+        # A tab built after the case was chosen still needs to hear about it.
+        try:
+            holder = self._nb.nametowidget(self._nb.select())
+        except (tk.TclError, KeyError):
+            return
+        tab = getattr(holder, 'inner', None)
+        case = self.case_path.get().strip()
+        if case and isinstance(tab, CaseConsumer) and not getattr(tab, '_case_adopted', None) == case:
+            try:
+                tab.adopt_case(case)
+                tab._case_adopted = case
+            except Exception as exc:
+                print(f'{type(tab).__name__}: could not adopt case: {exc}')
 
     def _realise_current(self):
         """Build the selected page, showing a busy cursor while it happens."""
