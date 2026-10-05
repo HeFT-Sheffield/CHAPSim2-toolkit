@@ -6,9 +6,22 @@ A python post-processing and toolkit program based on NumPy and Matplotlib for D
 
 ## Install:
 
-Dependencies are given in requirements.txt.
-pip: Navigate to base directory and run 'pip install .'
-conda: Navigate to base directory and run 'conda env create -f environment.yml' to create a conda environment for the program then 'conda activate chapsim2-toolkit' to use the environment.
+The toolkit is run from a checkout — the modules sit at the top level, so an
+install places only metadata and does not put them on the import path. What you
+need is the dependencies:
+
+```bash
+pip install -r requirements.txt          # everything, including the GUI and 3D
+pip install numpy matplotlib tqdm        # enough for the scripts on a cluster
+conda env create -f environment.yml      # or a conda environment
+conda activate chapsim2-toolkit
+```
+
+Then run the scripts in place, e.g. `python gui.py` or `python turb_stats.py`.
+
+`pandas` is used only by thermal_BC_calc.py, `ttkbootstrap` only by gui.py and
+`pyvista` only by the 3D visualisation; the post-processing scripts need just
+numpy, matplotlib and tqdm.
 
 ## CHAPSim2 output it reads:
 

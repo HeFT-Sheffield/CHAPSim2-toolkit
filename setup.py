@@ -14,6 +14,14 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/AlexOld1/CHAPSim2_python_toolkit",
+    # NOTE: the modules sit at the top level with no __init__.py, so
+    # find_packages() returns nothing and an install places only metadata.
+    # The toolkit is therefore run from a checkout; `pip install .[gui,3d]`
+    # is useful for pulling in the dependencies. Making it importable after
+    # an install means either listing every module in py_modules - which
+    # would put names as generic as `utils`, `config` and `slice` on the
+    # global import path - or moving them under a package directory. The
+    # second is the right answer and is not a packaging-file change.
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -36,7 +44,10 @@ setup(
     ],
     extras_require={
         "3d": [
-            "pyvista>=0.32.0",  # For 3D visualization (visualise_3d.py)
+            "pyvista>=0.32.0",  # 3D visualisation: turb_visu.py and the GUI tab
+        ],
+        "gui": [
+            "ttkbootstrap>=1.0.0",  # gui.py; the scripts do not need it
         ],
         "dev": [
             "pytest>=6.0",
