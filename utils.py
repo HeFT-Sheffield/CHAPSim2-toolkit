@@ -1,7 +1,8 @@
+import glob
 import os
+import re
 import numpy as np
 import xml.etree.ElementTree as ET
-import mmap
 from tqdm import tqdm
 
 # =====================================================================================================================================================
@@ -759,8 +760,160 @@ def get_fluid_properties(medium):
         raise ValueError(f"Unknown medium: {medium}. Available options: Li, Na, Pb, Bi, LBE, FLiBe, PbLi")
 
 
+# CHAPSim2 OUTPUT LAYOUT
+# =====================================================================================================================================================
+#
+# A CHAPSim2 case directory looks like this:
+#
+#   1_data/      restart/checkpoint binaries, spectra, stats bundles
+#   2_visu/
+#       xdmf/    .xdmf descriptors
+#       data/    field binaries (.bin) and bundle metadata (*_meta_*.dat,
+#                *_?profile_*.dat)
+#       mesh/    grid coordinate binaries
+#   3_monitor/   monitor point files and history logs
+#   4_check/     mesh and property check tables
+#
+# Older CHAPSim2 builds kept every visualisation file flat in 2_visu/ with the
+# binaries in 1_data/.  resolve_case_dirs() accepts either and reports where
+# each kind of file actually lives, so the rest of the toolkit never has to
+# care which layout it was handed.
+
+_SLICE_LABEL_RE = re.compile(r'^([xyz])i(\d+)$')
+_SLICE_IN_NAME_RE = re.compile(r'([xyz]i\d+)')
+_SLICE_FILE_RE = re.compile(r'_([xyz]i\d+)_(\d+)\.xdmf$')
+_XML_DECL_RE = re.compile(r'<\?xml[^?]*\?>')
+
+#: Physics groups CHAPSim2 writes visualisation output for.
+VISU_GROUPS = ('flow', 'thermo', 'mhd')
+
+
+def resolve_case_dirs(path):
+    """Locate the standard CHAPSim2 output directories for a case.
+
+    Args:
+        path: A case directory, or its ``2_visu`` / ``2_visu/xdmf`` /
+            ``2_visu/data`` / ``2_visu/mesh`` / ``1_data`` subdirectory.  Any of
+            these identify the same case.
+
+    Returns:
+        dict with keys ``case``, ``visu``, ``xdmf``, ``data``, ``mesh``,
+        ``raw`` (1_data), ``monitor`` (3_monitor) and ``check`` (4_check).
+        Entries always hold a path; ``xdmf``/``data``/``mesh`` collapse onto
+        ``2_visu`` itself for the old flat layout.
+    """
+    base = os.path.normpath(os.path.expanduser(os.path.expandvars(str(path).strip())))
+
+    # Walk up from any of the known subdirectories to the case root.
+    name = os.path.basename(base)
+    parent = os.path.dirname(base)
+    if name in ('xdmf', 'data', 'mesh') and os.path.basename(parent) == '2_visu':
+        base = os.path.dirname(parent)
+    elif name in ('2_visu', '1_data', '3_monitor', '4_check'):
+        base = parent
+
+    visu = os.path.join(base, '2_visu')
+    nested = {k: os.path.join(visu, k) for k in ('xdmf', 'data', 'mesh')}
+    # The nested layout is in use as soon as 2_visu/xdmf exists; otherwise fall
+    # back to the flat layout where everything sat directly in 2_visu.
+    if os.path.isdir(nested['xdmf']):
+        xdmf_dir, data_dir, mesh_dir = (nested['xdmf'], nested['data'], nested['mesh'])
+    else:
+        xdmf_dir = data_dir = mesh_dir = visu
+
+    return {
+        'case': base,
+        'visu': visu,
+        'xdmf': xdmf_dir,
+        'data': data_dir,
+        'mesh': mesh_dir,
+        'raw': os.path.join(base, '1_data'),
+        'monitor': os.path.join(base, '3_monitor'),
+        'check': os.path.join(base, '4_check'),
+    }
+
+
+def xdmf_folder(path):
+    """Return the directory holding a case's .xdmf files."""
+    return resolve_case_dirs(path)['xdmf']
+
+
+_BIN_SEARCH_DIRS = {}
+
+
+def _binary_search_dirs(xdmf_dir):
+    """Ordered fallback directories for a binary referenced by an XDMF file."""
+    cached = _BIN_SEARCH_DIRS.get(xdmf_dir)
+    if cached is not None:
+        return cached
+
+    dirs = resolve_case_dirs(xdmf_dir)
+    candidates = [xdmf_dir, dirs['data'], dirs['mesh'], dirs['visu'], dirs['raw']]
+    # Preserve order, drop duplicates and anything that is not present.
+    seen = set()
+    ordered = []
+    for d in candidates:
+        if d and d not in seen and os.path.isdir(d):
+            seen.add(d)
+            ordered.append(d)
+    _BIN_SEARCH_DIRS[xdmf_dir] = ordered
+    return ordered
+
+
+def resolve_binary_path(ref, xdmf_dir):
+    """Resolve a binary reference from an XDMF DataItem to a real file.
+
+    CHAPSim2 writes paths relative to the XDMF file (``../data/x.bin``,
+    ``../mesh/y.bin``), so that is tried first.  If the tree has been moved or
+    flattened the basename is looked up in the case's other output
+    directories.
+
+    Returns:
+        str path, or None when no candidate exists.
+    """
+    if not ref:
+        return None
+
+    direct = os.path.normpath(os.path.join(xdmf_dir, ref))
+    if os.path.isfile(direct):
+        return direct
+
+    basename = os.path.basename(ref)
+    for directory in _binary_search_dirs(xdmf_dir):
+        candidate = os.path.join(directory, basename)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+# =====================================================================================================================================================
 # XML PARSING HELPER
 # =====================================================================================================================================================
+
+#: Parsed XDMF documents and grid descriptors, keyed on (path, mtime, size) so
+#: an edited or regenerated file is never served stale. Bounded because a long
+#: GUI session can walk hundreds of timesteps; XDMF trees are not small.
+_XDMF_CACHE_LIMIT = 32
+_XDMF_XML_CACHE = {}
+_XDMF_GRID_CACHE = {}
+
+
+def _cache_key(path):
+    """Identity of a file's current contents, or None if it is unreadable."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (os.path.abspath(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _cache_store(cache, key, value):
+    """Insert into a bounded cache, evicting the oldest entry when full."""
+    if len(cache) >= _XDMF_CACHE_LIMIT:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+    return value
+
 
 def _parse_xdmf_xml(xdmf_path):
     """
@@ -772,35 +925,44 @@ def _parse_xdmf_xml(xdmf_path):
     This function wraps them in a synthetic root and returns the *last*
     <Xdmf> element (the most recent write).
 
+    Results are cached on (path, mtime, size) so that the metadata pass and
+    the subsequent data pass do not re-read and re-parse the same document.
+
     Returns:
         ET.Element: The root element to iterate over, or None on failure.
     """
-    try:
-        return ET.parse(xdmf_path).getroot()
-    except ET.ParseError:
-        pass
-
-    # Likely multiple root elements — read to string, wrap in synthetic root, take last entry
-    import re
-    try:
-        with open(xdmf_path, 'r') as f:
-            xml_content = f.read()
-    except IOError as e:
-        print(f"Error reading {xdmf_path}: {e}")
+    cache_key = _cache_key(xdmf_path)
+    if cache_key is None:
         return None
+    if cache_key in _XDMF_XML_CACHE:
+        return _XDMF_XML_CACHE[cache_key]
 
-    cleaned = re.sub(r'<\?xml[^?]*\?>', '', xml_content)
+    root = None
     try:
-        wrapper = ET.fromstring(f"<_wrapper>{cleaned}</_wrapper>")
-        xdmf_elements = list(wrapper)
-        if xdmf_elements:
-            print(f"Note: {os.path.basename(xdmf_path)} contains {len(xdmf_elements)} "
-                  f"appended entries — using the last one.")
-            return xdmf_elements[-1]
-    except ET.ParseError as e:
-        print(f"Error parsing {xdmf_path} (even after handling appended entries): {e}")
+        root = ET.parse(xdmf_path).getroot()
+    except ET.ParseError:
+        # Likely multiple root elements — wrap in a synthetic root, take the last entry.
+        try:
+            with open(xdmf_path, 'r') as f:
+                xml_content = f.read()
+        except IOError as e:
+            print(f"Error reading {xdmf_path}: {e}")
+            return None
 
-    return None
+        cleaned = _XML_DECL_RE.sub('', xml_content)
+        try:
+            wrapper = ET.fromstring(f"<_wrapper>{cleaned}</_wrapper>")
+            xdmf_elements = list(wrapper)
+            if xdmf_elements:
+                print(f"Note: {os.path.basename(xdmf_path)} contains {len(xdmf_elements)} "
+                      f"appended entries — using the last one.")
+                root = xdmf_elements[-1]
+        except ET.ParseError as e:
+            print(f"Error parsing {xdmf_path} (even after handling appended entries): {e}")
+            return None
+
+    return _cache_store(_XDMF_XML_CACHE, cache_key, root)
+
 
 # =====================================================================================================================================================
 # TEXT DATA UTILITIES
@@ -815,6 +977,7 @@ def case_path(folder_path, case):
     return os.path.normpath(os.path.join(base, case_name))
 
 def data_filepath(folder_path, case, quantity, timestep):
+    """Path of a legacy per-quantity tsp_avg table (per-field output layout)."""
     return os.path.join(
         case_path(folder_path, case),
         '1_data',
@@ -834,26 +997,344 @@ def get_quantities(thermo_on):
         quantities.extend(['T', 'Tu2'])
     return quantities
 
+
+# =====================================================================================================================================================
+# ASCII PROFILE BUNDLES (time-and-space averaged statistics)
+# =====================================================================================================================================================
+#
+# With the bundled output layout CHAPSim2 writes every tsp_avg statistic for a
+# physics group into one self-describing table:
+#
+#   2_visu/data/domain1_tsp_avg_flow_yprofile_60.dat
+#
+#   # CHAPSim2 time-and-space averaged profile
+#   # format_version: CHAPSim_profile_ascii_v1
+#   # direction: y
+#   # coordinate: yc
+#   # npoints: 80
+#   # columns: index yc tsp_avg_pr tsp_avg_u1 ...
+#   <npoints rows of whitespace-separated values>
+#
+# This replaced the per-quantity 1_data/domain1_tsp_avg_<quantity>_<iter>.dat
+# files, which the per-field output layout still writes.
+
+PROFILE_BUNDLE_FORMAT = 'CHAPSim_profile_ascii_v1'
+
+
+def read_profile_bundle(path):
+    """Read a CHAPSim2 ASCII profile bundle.
+
+    Args:
+        path: Path to a ``*_?profile_<iter>.dat`` table.
+
+    Returns:
+        tuple ``(columns, meta)`` where ``columns`` maps each column name to a
+        1-D array and ``meta`` holds the header fields (``direction``,
+        ``coordinate``, ``npoints``, ``format_version``, ``columns``).
+        ``({}, {})`` if the file is missing or unreadable.
+    """
+    if not os.path.isfile(path):
+        return {}, {}
+
+    meta = {}
+    names = None
+    try:
+        with open(path, 'r') as f:
+            for line in f:
+                if not line.startswith('#'):
+                    break
+                body = line[1:].strip()
+                if ':' not in body:
+                    continue
+                key, _, value = body.partition(':')
+                key = key.strip().lower()
+                value = value.strip()
+                if key == 'columns':
+                    names = value.split()
+                    meta['columns'] = names
+                else:
+                    meta[key] = value
+    except IOError as e:
+        print(f"Error reading profile bundle {path}: {e}")
+        return {}, {}
+
+    if not names:
+        print(f"Profile bundle {os.path.basename(path)} has no '# columns:' header")
+        return {}, meta
+
+    try:
+        table = np.loadtxt(path, comments='#', ndmin=2)
+    except (OSError, ValueError) as e:
+        print(f"Error parsing profile bundle {path}: {e}")
+        return {}, meta
+
+    if table.shape[1] != len(names):
+        print(f"Profile bundle {os.path.basename(path)}: header lists {len(names)} columns "
+              f"but the table has {table.shape[1]} — truncating to the shorter of the two.")
+    ncol = min(table.shape[1], len(names))
+
+    if 'npoints' in meta:
+        try:
+            meta['npoints'] = int(meta['npoints'])
+        except ValueError:
+            pass
+
+    columns = {names[i]: table[:, i] for i in range(ncol)}
+    return columns, meta
+
+
+def find_profile_bundles(path, timestep=None):
+    """Find ASCII profile bundles written for a case.
+
+    Args:
+        path: Case directory (or any of its output subdirectories).
+        timestep: Optional timestep to filter on.
+
+    Returns:
+        dict mapping ``(group, timestep)`` to the bundle path, e.g.
+        ``{('flow', '60'): '.../domain1_tsp_avg_flow_yprofile_60.dat'}``.
+    """
+    dirs = resolve_case_dirs(path)
+    pattern = re.compile(r'^domain\d+_tsp_avg_([a-z]+)_[xyz]profile_(\d+)\.dat$')
+
+    found = {}
+    # The bundled layout writes into 2_visu/data; the flat layout into 2_visu.
+    for directory in dict.fromkeys((dirs['data'], dirs['visu'])):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for fname in entries:
+            match = pattern.match(fname)
+            if not match:
+                continue
+            group, ts = match.group(1), match.group(2)
+            if timestep is not None and ts != str(timestep):
+                continue
+            found.setdefault((group, ts), os.path.join(directory, fname))
+    return found
+
+
+def load_tsp_avg_profiles(path, timestep, strip_prefix=True):
+    """Load every time-and-space averaged profile available for a timestep.
+
+    Reads the bundled ASCII tables first and falls back to the per-field
+    ``1_data/domain1_tsp_avg_<quantity>_<iter>.dat`` files, so both output
+    layouts give the same result.
+
+    Args:
+        path: Case directory (or any of its output subdirectories).
+        timestep: Timestep to load.
+        strip_prefix: Drop the ``tsp_avg_`` prefix from variable names.
+
+    Returns:
+        tuple ``(variables, coords)``.  ``variables`` maps variable name to a
+        1-D array; ``coords`` holds the profile coordinate under its own name
+        (``yc``, ``xc`` or ``zc``) plus ``direction``.
+    """
+    dirs = resolve_case_dirs(path)
+    variables = {}
+    coords = {}
+
+    for (_group, _ts), bundle in sorted(find_profile_bundles(path, timestep).items()):
+        columns, meta = read_profile_bundle(bundle)
+        if not columns:
+            continue
+        coordinate = meta.get('coordinate', 'yc')
+        direction = meta.get('direction', coordinate[:1])
+        coords.setdefault('direction', direction)
+        if coordinate in columns:
+            coords.setdefault(coordinate, columns[coordinate])
+        for name, values in columns.items():
+            if name in ('index', coordinate):
+                continue
+            key = _strip_avg_prefix(name) if strip_prefix else name
+            variables.setdefault(key, values)
+
+    # Per-field layout: one two/three-column table per quantity.
+    legacy_pattern = os.path.join(dirs['raw'], f'domain1_tsp_avg_*_{timestep}.dat')
+    prefix, suffix = 'domain1_tsp_avg_', f'_{timestep}.dat'
+    for file_path in sorted(glob.glob(legacy_pattern)):
+        quantity = os.path.basename(file_path)[len(prefix):-len(suffix)]
+        key = quantity if strip_prefix else f'tsp_avg_{quantity}'
+        if key in variables:
+            continue
+        table = load_ts_avg_data(file_path)
+        if table is None or table.ndim != 2 or table.shape[1] < 3:
+            continue
+        variables[key] = table[:, 2]
+        coords.setdefault('yc', table[:, 1])
+        coords.setdefault('direction', 'y')
+
+    return variables, coords
+
+
+# =====================================================================================================================================================
+# BINARY BUNDLE METADATA
+# =====================================================================================================================================================
+#
+# Alongside each bundled .bin, CHAPSim2 writes a plain-text manifest naming
+# every field packed into it and where it starts:
+#
+#   CHAPSim_visu_bundle_v1 / CHAPSim_visu_slice_bundle_v1
+#   group flow
+#   domain 1
+#   iter 60
+#   precision_bytes 4
+#   fields name original_file [source] [slice] center dimensions_kji ...
+#   pr 2_visu/data/domain1_visu_pr_60.bin cell_centered Cell 64 80 64 4 0 1310720
+#
+# The XDMF carries the same information, so this reader is a fallback for
+# cases where only the binaries were kept.
+
+def read_visu_bundle_meta(path):
+    """Read a ``*_meta_<iter>.dat`` visualisation bundle manifest.
+
+    Returns:
+        tuple ``(fields, meta)``.  ``fields`` is a list of dicts with keys
+        ``name``, ``original_file``, ``slice`` (None for 3-D bundles),
+        ``dims`` (k,j,i), ``precision_bytes``, ``offset_bytes`` and
+        ``nbytes``.  ``meta`` holds ``format``, ``group``, ``domain`` and
+        ``iter``.
+    """
+    if not os.path.isfile(path):
+        return [], {}
+
+    fields = []
+    meta = {}
+    columns = None
+    try:
+        with open(path, 'r') as f:
+            for lineno, line in enumerate(f):
+                parts = line.split()
+                if not parts:
+                    continue
+                if lineno == 0:
+                    meta['format'] = parts[0]
+                    continue
+                key = parts[0]
+                if key in ('group', 'domain', 'iter', 'precision_bytes') and len(parts) >= 2:
+                    meta[key] = parts[1]
+                    continue
+                if key == 'fields':
+                    columns = parts[1:]
+                    continue
+                if columns is None:
+                    continue
+                # Trailing numeric columns are fixed: ... dims(3) precision offset nbytes
+                if len(parts) < 7:
+                    continue
+                try:
+                    dims = tuple(int(v) for v in parts[-6:-3])
+                    precision, offset, nbytes = (int(parts[-3]), int(parts[-2]), int(parts[-1]))
+                except ValueError:
+                    continue
+                record = {
+                    'name': parts[0],
+                    'original_file': parts[1] if len(parts) > 1 else None,
+                    'slice': None,
+                    'dims': dims,
+                    'precision_bytes': precision,
+                    'offset_bytes': offset,
+                    'nbytes': nbytes,
+                }
+                if 'slice' in columns:
+                    # Slice bundles carry the tag immediately after original_file.
+                    tag = parts[2] if len(parts) > 2 else None
+                    if tag and _SLICE_LABEL_RE.match(tag):
+                        record['slice'] = tag
+                fields.append(record)
+    except IOError as e:
+        print(f"Error reading bundle metadata {path}: {e}")
+        return [], meta
+
+    return fields, meta
+
+
 # =====================================================================================================================================================
 # XDMF FILE PATH UTILITIES
 # =====================================================================================================================================================
 
 def visu_file_paths(folder_path, case, timestep):
-    """Return XDMF file paths for instantaneous, time-averaged, and tsp_avg (zi1) data."""
-    case_dir = case_path(folder_path, case)
-    visu = os.path.join(case_dir, '2_visu')
-    file_names = [
-        os.path.join(visu, f'domain1_flow_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_t_avg_flow_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_tsp_avg_flow_zi1_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_thermo_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_t_avg_thermo_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_tsp_avg_thermo_zi1_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_mhd_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_t_avg_mhd_{timestep}.xdmf'),
-        os.path.join(visu, f'domain1_tsp_avg_mhd_zi1_{timestep}.xdmf'),
-    ]
-    return file_names
+    """Return the XDMF files a case offers for a timestep.
+
+    Covers instantaneous (``domain1_flow_60.xdmf``), 3-D time-averaged
+    (``domain1_t_avg_flow_60.xdmf``) and time-and-space averaged plane
+    (``domain1_tsp_avg_flow_zi1_60.xdmf``) output for every physics group.
+    The tsp_avg plane tag names the periodic direction that was averaged out,
+    so it is discovered rather than assumed to be ``zi1``.
+
+    The returned list is ordered instantaneous → t_avg → tsp_avg within each
+    group, and is filtered to files that exist.
+    """
+    xdmf_dir = resolve_case_dirs(case_path(folder_path, case))['xdmf']
+
+    names = []
+    for group in VISU_GROUPS:
+        names.append(f'domain1_{group}_{timestep}.xdmf')
+        names.append(f'domain1_t_avg_{group}_{timestep}.xdmf')
+        names.append(f'domain1_tsp_avg_{group}_{timestep}.xdmf')
+        # tsp_avg output of a flow with one periodic direction is a plane,
+        # tagged with that direction (zi1 for a spanwise-periodic channel).
+        for axis in 'xyz':
+            names.append(f'domain1_tsp_avg_{group}_{axis}i1_{timestep}.xdmf')
+
+    paths = [os.path.join(xdmf_dir, n) for n in names]
+    existing = [p for p in paths if os.path.isfile(p)]
+    # Returning only the files that exist keeps callers from probing a
+    # directory that may be on a slow parallel filesystem.
+    return existing if existing else paths
+
+
+def group_xdmf_paths(folder_path, case, timestep, group='flow'):
+    """Locate one physics group's XDMF output for a timestep, by averaging tier.
+
+    Returns:
+        dict with keys ``inst``, ``t_avg`` and ``tsp_avg``; each holds a path
+        or None. Unlike visu_file_paths() this is keyed by meaning rather than
+        position, so a caller after (say) the instantaneous field cannot be
+        handed an averaged one just because the instantaneous file is absent.
+    """
+    xdmf_dir = resolve_case_dirs(case_path(folder_path, case))['xdmf']
+
+    candidates = {
+        'inst': [f'domain1_{group}_{timestep}.xdmf'],
+        't_avg': [f'domain1_t_avg_{group}_{timestep}.xdmf'],
+        # tsp_avg of a flow with one periodic direction is a plane tagged with
+        # that direction; with two it is an ASCII profile and has no XDMF.
+        'tsp_avg': ([f'domain1_tsp_avg_{group}_{timestep}.xdmf']
+                    + [f'domain1_tsp_avg_{group}_{a}i1_{timestep}.xdmf' for a in 'xyz']),
+    }
+
+    found = {}
+    for tier, names in candidates.items():
+        found[tier] = next(
+            (os.path.join(xdmf_dir, n) for n in names
+             if os.path.isfile(os.path.join(xdmf_dir, n))), None)
+    return found
+
+
+def find_available_timesteps(path):
+    """List the timesteps a case has XDMF field output for, sorted numerically.
+
+    Mesh descriptors (``domain1_grid_yi8_0.xdmf``, ``domain1_grids_3d_0.xdmf``)
+    are all stamped with iteration 0 and would otherwise advertise a timestep
+    with no field data behind it.
+    """
+    xdmf_dir = resolve_case_dirs(path)['xdmf']
+    steps = set()
+    try:
+        entries = os.listdir(xdmf_dir)
+    except OSError:
+        return []
+
+    for fname in entries:
+        if not fname.endswith('.xdmf') or '_grid_' in fname or '_grids_' in fname:
+            continue
+        tail = fname[:-len('.xdmf')].rsplit('_', 1)[-1]
+        if tail.isdigit():
+            steps.add(tail)
+    return sorted(steps, key=int)
 
 
 # =====================================================================================================================================================
@@ -872,8 +1353,7 @@ def parse_slice_label(label):
     Returns:
         tuple: (direction, index) or None if not a valid slice label
     """
-    import re
-    match = re.match(r'^([xyz])i(\d+)$', label)
+    match = _SLICE_LABEL_RE.match(str(label).strip())
     if match:
         return match.group(1), int(match.group(2))
     return None
@@ -881,38 +1361,79 @@ def parse_slice_label(label):
 
 def find_available_slices(visu_folder, timestep=None):
     """
-    Find available 2D slice labels in a visu folder.
+    Find available 2D slice labels for a case.
+
+    Picks up both the per-slice XDMF files (``domain1_flow_yi8_60.xdmf``) and
+    the slice bundles (``domain1_flow_slices_visu_60.xdmf``), which pack every
+    slice of a timestep into a single grid collection.
 
     Args:
-        visu_folder: Path to the 2_visu folder
+        visu_folder: Case directory or any of its output subdirectories
         timestep: Optional timestep to filter for
 
     Returns:
         list of unique slice labels found, sorted (e.g., ['xi5', 'yi8', 'zi3'])
     """
-    import re
+    dirs = resolve_case_dirs(visu_folder)
     labels = set()
+    bundle_re = re.compile(r'_slices_visu_(\d+)\.xdmf$')
+
     try:
-        for f in os.listdir(visu_folder):
-            if not f.endswith('.xdmf'):
-                continue
-            match = re.search(r'_([xyz]i\d+)_(\d+)\.xdmf$', f)
-            if match:
-                label = match.group(1)
-                ts = match.group(2)
-                if timestep is None or ts == str(timestep):
-                    labels.add(label)
+        entries = os.listdir(dirs['xdmf'])
     except OSError:
-        pass
+        return []
+
+    for fname in entries:
+        if not fname.endswith('.xdmf'):
+            continue
+        # Grid files (domain1_grid_yi8_0.xdmf) describe the mesh, not a field.
+        # tsp_avg files carry an xi1/yi1/zi1 tag naming the direction that was
+        # averaged away, which is not a slice through the domain.
+        if '_grid_' in fname or 'tsp_avg' in fname:
+            continue
+
+        match = _SLICE_FILE_RE.search(fname)
+        if match:
+            if timestep is None or match.group(2) == str(timestep):
+                labels.add(match.group(1))
+            continue
+
+        bundle = bundle_re.search(fname)
+        if bundle and (timestep is None or bundle.group(1) == str(timestep)):
+            for grid in parse_xdmf_grids(os.path.join(dirs['xdmf'], fname)):
+                if grid['tag']:
+                    labels.add(grid['tag'])
+
     return sorted(labels)
 
 
-def slice_axis_info(slice_label):
+#: Axis labels per computational direction. A pipe or annulus is rectilinear
+#: in (x, r, theta), not in Cartesian space, so a slice of one is plotted in
+#: those coordinates and has to be labelled as such — an unrolled (r, theta)
+#: plane drawn on axes marked y and z would read as a square duct.
+_AXIS_LABELS = {
+    'cartesian': {'x': '$x$', 'y': '$y$', 'z': '$z$'},
+    'cylindrical': {'x': '$x$', 'y': '$r$', 'z': r'$\theta$'},
+}
+
+
+def axis_labels(coordinate_system=None):
+    """Plot labels for the three computational directions, keyed 'x'/'y'/'z'.
+
+    Pass ``grid_info['coordinate_system']``; anything unrecognised (including
+    None) falls back to Cartesian labels.
+    """
+    return _AXIS_LABELS.get(coordinate_system or 'cartesian', _AXIS_LABELS['cartesian'])
+
+
+def slice_axis_info(slice_label, coordinate_system='cartesian'):
     """
     Get axis labels and grid coordinate keys for a 2D slice.
 
     Args:
         slice_label: Slice label string (e.g., 'yi8')
+        coordinate_system: 'cartesian' or 'cylindrical'; usually
+            ``grid_info['coordinate_system']`` from parse_xdmf_metadata.
 
     Returns:
         dict with keys:
@@ -928,35 +1449,21 @@ def slice_axis_info(slice_label):
         return None
 
     direction, index = parsed
+    # The plane is spanned by the two directions the slice does not cut.
+    planes = {'y': ('x', 'z'), 'x': ('y', 'z'), 'z': ('x', 'y')}
+    if direction not in planes:
+        return None
 
-    if direction == 'y':
-        # xz slice at constant y
-        return {
-            'plane': 'xz',
-            'normal_dir': 'y',
-            'normal_index': index,
-            'axis_labels': ('$x$', '$z$'),
-            'coord_keys': ('grid_x', 'grid_z'),
-        }
-    elif direction == 'x':
-        # yz slice at constant x
-        return {
-            'plane': 'yz',
-            'normal_dir': 'x',
-            'normal_index': index,
-            'axis_labels': ('$y$', '$z$'),
-            'coord_keys': ('grid_y', 'grid_z'),
-        }
-    elif direction == 'z':
-        # xy slice at constant z
-        return {
-            'plane': 'xy',
-            'normal_dir': 'z',
-            'normal_index': index,
-            'axis_labels': ('$x$', '$y$'),
-            'coord_keys': ('grid_x', 'grid_y'),
-        }
-    return None
+    first, second = planes[direction]
+    labels = axis_labels(coordinate_system)
+
+    return {
+        'plane': first + second,
+        'normal_dir': direction,
+        'normal_index': index,
+        'axis_labels': (labels[first], labels[second]),
+        'coord_keys': (f'grid_{first}', f'grid_{second}'),
+    }
 
 
 def parse_x_crop_input(text):
@@ -1027,23 +1534,20 @@ def apply_x_crop(data, x_coords, x_crop):
 # XDMF READING UTILITIES
 # =====================================================================================================================================================
 
-def read_binary_data_item(data_item, xdmf_dir):
+def _data_item_params(data_item, xdmf_dir):
     """
-    Read binary data from a DataItem element.
-
-    Args:
-        data_item: XML DataItem element
-        xdmf_dir: Directory containing the XDMF file
+    Extract the binary read parameters from a DataItem element without
+    touching the data itself.
 
     Returns:
-        numpy array or None if reading fails
+        dict with bin_path, dims, dtype, seek keys, or None if the item
+        cannot be read.
     """
     format_type = data_item.get('Format', 'Binary')
     if format_type != 'Binary':
-        print(f"Unsupported format: {format_type}")
+        print(f"Unsupported XDMF data format: {format_type}")
         return None
 
-    # Get data properties
     dims_str = data_item.get('Dimensions', '')
     dims = tuple(int(d) for d in dims_str.split()) if dims_str else None
 
@@ -1051,7 +1555,6 @@ def read_binary_data_item(data_item, xdmf_dir):
     precision = int(data_item.get('Precision', '8'))
     seek = int(data_item.get('Seek', '0'))
 
-    # Determine numpy dtype
     if number_type == 'Float':
         dtype = np.float32 if precision == 4 else np.float64
     elif number_type == 'Int':
@@ -1059,46 +1562,87 @@ def read_binary_data_item(data_item, xdmf_dir):
     else:
         dtype = np.float64
 
-    # Get binary file path
-    bin_path = data_item.text.strip() if data_item.text else None
+    bin_path = resolve_binary_path(
+        data_item.text.strip() if data_item.text else None, xdmf_dir)
     if bin_path is None:
         return None
 
-    # Resolve relative path - look in ../1_data relative to xdmf_dir
-    data_dir = os.path.normpath(os.path.join(xdmf_dir, '..', '1_data'))
-    bin_filename = os.path.basename(bin_path)
-    bin_path = os.path.join(data_dir, bin_filename)
+    return {
+        'bin_path': bin_path,
+        'dims': dims,
+        'dtype': dtype,
+        'seek': seek,
+    }
 
-    if not os.path.isfile(bin_path):
-        print(f"Binary file not found: {bin_path}")
-        return None
+
+def _read_binary(params, stride=1, handle=None):
+    """
+    Read one field from a binary file.
+
+    Args:
+        params: dict with bin_path, dims, dtype, seek (from _data_item_params)
+        stride: subsample every `stride`-th element along each axis. When >1
+            and `dims` has more than one axis, the file is memory-mapped so
+            only the strided subset is ever paged into RAM — large domains
+            no longer need to be fully resident just to build a decimated
+            (e.g. PyVista) grid.
+        handle: open binary file object for params['bin_path']. CHAPSim2 packs
+            every field of a group into one .bin, so reusing one handle across
+            a whole bundle avoids ~100 opens of the same file — a real cost on
+            a parallel filesystem.
+
+    Returns:
+        numpy array or None on failure
+    """
+    bin_path = params['bin_path']
+    dims = params['dims']
+    dtype = params['dtype']
+    seek = params['seek']
 
     try:
-        itemsize = np.dtype(dtype).itemsize
+        if stride > 1 and dims and len(dims) > 1:
+            mm = np.memmap(bin_path, dtype=dtype, mode='r', offset=seek, shape=tuple(dims))
+            data = np.array(mm[tuple(slice(None, None, stride) for _ in dims)])
+            del mm
+            return data
+
         if dims:
             count = int(np.prod(dims))
         else:
-            # Fallback: calculate from file size
-            file_size = os.path.getsize(bin_path)
-            count = (file_size - seek) // itemsize
+            itemsize = np.dtype(dtype).itemsize
+            count = (os.path.getsize(bin_path) - seek) // itemsize
 
-            # Standard reading with explicit count (fixes Lustre EOF hanging)
-        with open(bin_path, 'rb') as f:
-            f.seek(seek)
-            data = np.fromfile(f, dtype=dtype, count=count)
+        # Reading with an explicit count rather than to EOF: a bundled .bin
+        # holds many fields, and an unbounded read on Lustre can stall.
+        if handle is not None:
+            handle.seek(seek)
+            data = np.fromfile(handle, dtype=dtype, count=count)
+        else:
+            with open(bin_path, 'rb') as f:
+                f.seek(seek)
+                data = np.fromfile(f, dtype=dtype, count=count)
 
         if dims:
             expected_size = int(np.prod(dims))
             if data.size >= expected_size:
                 data = data[:expected_size].reshape(dims)
-            elif data.size < expected_size:
-                print(f"Warning: Data size mismatch for {bin_path} (got {data.size}, expected {expected_size})")
+            else:
+                print(f"Warning: Data size mismatch for {bin_path} "
+                      f"(got {data.size}, expected {expected_size})")
 
         return data
 
     except Exception as e:
         print(f"Error reading {bin_path}: {e}")
         return None
+
+
+def read_binary_data_item(data_item, xdmf_dir):
+    """Read the binary data behind an XDMF DataItem element."""
+    params = _data_item_params(data_item, xdmf_dir)
+    if params is None:
+        return None
+    return _read_binary(params)
 
 
 def _strip_avg_prefix(name):
@@ -1132,8 +1676,291 @@ def _reduce_xdmf_array(data, average_z=False, average_x=False):
     return np.squeeze(data)
 
 
+# =====================================================================================================================================================
+# XDMF METADATA PARSING & SELECTIVE LOADING
+# =====================================================================================================================================================
+
+def parse_xdmf_grids(xdmf_path):
+    """Describe every grid in an XDMF file without loading field data.
+
+    CHAPSim2 writes slice bundles as a ``GridType="Collection"`` holding one
+    uniform grid per slice, and each sub-grid reuses the same attribute names
+    (``pr``, ``qx_ccc``, ...).  They therefore have to be kept apart rather
+    than merged into one namespace.
+
+    Args:
+        xdmf_path: Path to the XDMF file
+
+    Returns:
+        list of dicts, one per uniform grid, each with keys ``name``, ``tag``
+        (slice label such as ``yi8``, or None), ``node_dimensions``,
+        ``cell_dimensions``, ``grid_x``/``grid_y``/``grid_z`` (node
+        coordinates) and ``vars`` ({name: read params including 'shape'}).
+        Treat the result as read-only: it is cached and shared between calls.
+    """
+    cache_key = _cache_key(xdmf_path)
+    if cache_key is not None and cache_key in _XDMF_GRID_CACHE:
+        return _XDMF_GRID_CACHE[cache_key]
+
+    root = _parse_xdmf_xml(xdmf_path)
+    if root is None:
+        return []
+
+    xdmf_dir = os.path.dirname(os.path.abspath(xdmf_path))
+    grids = []
+
+    for grid in root.iter('Grid'):
+        # Direct children only: a Collection's iter() would otherwise absorb
+        # the topology and attributes of every sub-grid it contains.
+        topo = grid.find('Topology')
+        attributes = grid.findall('Attribute')
+        if topo is None and not attributes:
+            continue
+
+        entry = {
+            'name': grid.get('Name', ''),
+            'tag': None,
+            'node_dimensions': None,
+            'cell_dimensions': None,
+            'vars': {},
+        }
+
+        tag_match = _SLICE_IN_NAME_RE.search(entry['name'])
+        if tag_match:
+            entry['tag'] = tag_match.group(1)
+
+        if topo is not None:
+            dims_str = topo.get('Dimensions')
+            if dims_str:
+                dims = tuple(int(d) for d in dims_str.split())
+                entry['node_dimensions'] = dims
+                entry['cell_dimensions'] = tuple(d - 1 for d in dims)
+
+        geom = grid.find('Geometry')
+        geom_type = geom.get('GeometryType') if geom is not None else None
+        if geom_type == 'VXVYVZ':
+            entry['coordinate_system'] = 'cartesian'
+            for axis, data_item in zip('xyz', geom.findall('DataItem')):
+                coords = read_binary_data_item(data_item, xdmf_dir)
+                if coords is not None:
+                    entry[f'grid_{axis}'] = coords
+        elif geom_type == 'XYZ':
+            entry.update(_cylindrical_axes(read_binary_data_item(geom.find('DataItem'), xdmf_dir),
+                                           entry['node_dimensions']))
+
+        cell_dims = entry['cell_dimensions']
+        for attribute in attributes:
+            name = attribute.get('Name')
+            data_item = attribute.find('DataItem')
+            if name is None or data_item is None:
+                continue
+            params = _data_item_params(data_item, xdmf_dir)
+            if params is None:
+                continue
+            params['shape'] = _effective_shape(params, cell_dims)
+            entry['vars'][name] = params
+
+        grids.append(entry)
+
+    if cache_key is not None:
+        _cache_store(_XDMF_GRID_CACHE, cache_key, grids)
+    return grids
+
+
+def _cylindrical_axes(points, node_dims):
+    """Recover the solver's (axial, radial, azimuthal) axes from a curvilinear mesh.
+
+    Pipe and annulus cases write their mesh as one XYZ point list rather than
+    three coordinate vectors, because the grid is only rectilinear in
+    (x, r, theta), not in Cartesian space. CHAPSim2 builds those points as
+
+        x = i * dx,   y = r(j) cos(theta_k),   z = r(j) sin(theta_k)
+
+    so each computational axis varies along exactly one index and can be read
+    straight back out. The toolkit's ``grid_y`` therefore holds the radius,
+    matching the solver's index-2 direction and letting the wall-normal
+    machinery work unchanged on a pipe.
+
+    Args:
+        points: (npoints, 3) array of node coordinates, k-major.
+        node_dims: XDMF topology dimensions in (k, j, i) order.
+
+    Returns:
+        dict of ``grid_x``/``grid_y``/``grid_z`` plus ``coordinate_system``
+        and the full ``grid_points`` block; empty if the data does not fit.
+    """
+    if points is None or node_dims is None or len(node_dims) != 3:
+        return {}
+
+    nk, nj, ni = node_dims
+    if points.size != nk * nj * ni * 3:
+        print(f"Curvilinear mesh has {points.size} values, expected "
+              f"{nk * nj * ni * 3} for a {node_dims} grid — skipping coordinates.")
+        return {}
+
+    pts = points.reshape(nk, nj, ni, 3)
+    radius = np.hypot(pts[0, :, 0, 1], pts[0, :, 0, 2])
+
+    # theta is undefined on the axis, so read it off the outermost radius —
+    # a pipe's first node sits at r = 0 and would otherwise give theta == 0.
+    j_ref = int(np.argmax(radius))
+    theta = np.arctan2(pts[:, j_ref, 0, 2], pts[:, j_ref, 0, 1])
+
+    return {
+        'coordinate_system': 'cylindrical',
+        'grid_x': pts[0, 0, :, 0],
+        'grid_y': radius,
+        # atan2 wraps at +/-pi; the solver sweeps theta monotonically from 0.
+        'grid_z': np.unwrap(theta) if theta.size > 1 else theta,
+        'grid_points': pts,
+    }
+
+
+def _effective_shape(params, cell_dims):
+    """Shape a field takes once a flat binary read is folded onto the grid."""
+    raw_dims = params['dims']
+    if raw_dims and len(raw_dims) > 1:
+        return raw_dims
+    if cell_dims:
+        if raw_dims:
+            size = int(np.prod(raw_dims))
+        else:
+            itemsize = np.dtype(params['dtype']).itemsize
+            size = (os.path.getsize(params['bin_path']) - params['seek']) // itemsize
+        if size == int(np.prod(cell_dims)):
+            return cell_dims
+        return raw_dims if raw_dims else (size,)
+    return raw_dims
+
+
+def _select_grid(grids, grid_select):
+    """Pick one grid out of an XDMF file's grid list.
+
+    ``grid_select`` may be a slice label ('yi8'), a grid name, or an integer
+    index.  ``None`` takes the first grid.
+    """
+    if not grids:
+        return None
+    if grid_select is None or len(grids) == 1:
+        # A single-grid file is unambiguous: honour it even when the caller
+        # asked for a slice tag that this file does not spell out in its grid
+        # name (per-slice files are named by their filename, not their grid).
+        return grids[0]
+    if isinstance(grid_select, int):
+        return grids[grid_select] if -len(grids) <= grid_select < len(grids) else None
+    key = str(grid_select)
+    for grid in grids:
+        if grid['tag'] == key or grid['name'] == key:
+            return grid
+    return None
+
+
+def parse_xdmf_metadata(xdmf_path, grid_select=None):
+    """
+    Parse XDMF file structure and return variable names, shapes, and grid info
+    without loading variable data.  Grid coordinates (small 1D arrays) are loaded.
+
+    Args:
+        xdmf_path: Path to the XDMF file
+        grid_select: For files holding several grids (slice bundles), the slice
+            label, grid name or index to read. Defaults to the first grid.
+
+    Returns:
+        tuple: (var_metadata, grid_info)
+            var_metadata: dict of {name: {'shape': tuple, 'bin_path': str,
+                          'dims': tuple, 'dtype': dtype, 'seek': int}}
+            grid_info: dict with node_dimensions, cell_dimensions,
+                       grid_x, grid_y, grid_z, plus 'available_grids'
+                       (slice labels) and 'grid_tag' for bundles
+    """
+    grids = parse_xdmf_grids(xdmf_path)
+    if not grids:
+        return {}, {}
+
+    chosen = _select_grid(grids, grid_select)
+    if chosen is None:
+        available = [g['tag'] or g['name'] for g in grids]
+        print(f"Grid '{grid_select}' not found in {os.path.basename(xdmf_path)}. "
+              f"Available: {', '.join(str(a) for a in available)}")
+        return {}, {}
+
+    grid_info = {k: v for k, v in chosen.items() if k != 'vars' and v is not None}
+    grid_info.pop('name', None)
+    grid_info['grid_tag'] = chosen['tag']
+    if len(grids) > 1:
+        grid_info['available_grids'] = [g['tag'] or g['name'] for g in grids]
+
+    # Shallow copy: parse_xdmf_grids caches its result, and callers (the GUI
+    # in particular) drop entries from var_metadata to filter the variable list.
+    return dict(chosen['vars']), grid_info
+
+
+def load_xdmf_variables(var_metadata, selected_vars, grid_info=None,
+                        average_z=False, average_x=False, stride=1, quiet=False):
+    """
+    Load specific variables using pre-parsed XDMF metadata.
+
+    Args:
+        var_metadata: dict from parse_xdmf_metadata
+        selected_vars: list of variable names to load
+        grid_info: grid info dict (for reshaping flat arrays)
+        average_z: If True, average over the z direction for 3D arrays.
+        average_x: If True, average over the x direction for 3D arrays.
+        stride: subsample every `stride`-th cell along each axis at read
+            time (see _read_binary) so large domains don't need to be fully
+            loaded just to be decimated afterwards.
+        quiet: Suppress the per-variable progress log.
+
+    Returns:
+        dict: {variable_name: numpy_array}. Singleton dimensions are automatically
+              squeezed (e.g. tsp_avg slice files become true 2D).
+    """
+    arrays = {}
+    cell_dims = (grid_info or {}).get('cell_dimensions')
+
+    missing = [n for n in selected_vars if n not in var_metadata]
+    for name in missing:
+        tqdm.write(f"  Variable '{name}' not found in metadata, skipping")
+    present = [n for n in selected_vars if n in var_metadata]
+
+    # Group by source file so each bundled .bin is opened once, not once per
+    # field: a flow stats bundle holds ~90 fields in a single file.
+    by_file = {}
+    for name in present:
+        by_file.setdefault(var_metadata[name]['bin_path'], []).append(name)
+
+    with tqdm(total=len(present), desc="Loading selected variables", unit="var",
+              disable=quiet or not present) as pbar:
+        for bin_path, names in by_file.items():
+            try:
+                handle = open(bin_path, 'rb')
+            except OSError as e:
+                print(f"Error opening {bin_path}: {e}")
+                pbar.update(len(names))
+                continue
+            try:
+                for name in names:
+                    data = _read_binary(var_metadata[name], stride=stride, handle=handle)
+                    pbar.update(1)
+                    if data is None:
+                        continue
+
+                    # Reshape flat arrays to 3D using cell dimensions
+                    if data.ndim == 1 and cell_dims and data.size == int(np.prod(cell_dims)):
+                        data = data.reshape(cell_dims)
+
+                    arrays[name] = _reduce_xdmf_array(
+                        data, average_z=average_z, average_x=average_x)
+                    if not quiet:
+                        tqdm.write(f"  Loaded {name}: shape {arrays[name].shape}")
+            finally:
+                handle.close()
+
+    return arrays
+
+
 def parse_xdmf_file(xdmf_path, load_all_vars=None, required_vars=None,
-                    average_z=False, average_x=False):
+                    average_z=False, average_x=False, grid_select=None):
     """
     Parse XDMF file and extract data from associated binary files.
 
@@ -1145,6 +1972,8 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, required_vars=None,
                    prefixed names). If None, uses module REQUIRED_VARS.
         average_z: If True, average over the z direction for 3D arrays.
         average_x: If True, average over the x direction for 3D arrays.
+        grid_select: Slice label, grid name or index for multi-grid files
+                     (slice bundles). Defaults to the first grid.
 
     Returns:
         tuple: (arrays dict, grid_info dict). Singleton dimensions (e.g. from tsp_avg
@@ -1153,300 +1982,25 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, required_vars=None,
     if load_all_vars is None:
         load_all_vars = LOAD_ALL_VARS
 
-    if not os.path.isfile(xdmf_path):
-        return {}, {}
+    var_metadata, grid_info = parse_xdmf_metadata(xdmf_path, grid_select=grid_select)
+    if not var_metadata:
+        return {}, grid_info
 
-    root = _parse_xdmf_xml(xdmf_path)
-    if root is None:
-        return {}, {}
+    if load_all_vars:
+        selected = list(var_metadata)
+    else:
+        selected = [n for n in var_metadata if _is_selected_variable(n, required_vars)]
+        skipped = len(var_metadata) - len(selected)
+        if skipped:
+            names = [n for n in var_metadata if n not in set(selected)]
+            tqdm.write(f"  Skipping {skipped} unneeded variables: "
+                       f"{', '.join(names[:3])}{'...' if skipped > 3 else ''}")
 
-    arrays = {}
-    grid_info = {}
-    xdmf_dir = os.path.dirname(xdmf_path)
-
-    # Find grid information
-    for grid in root.iter('Grid'):
-        # Get topology dimensions
-        for topo in grid.iter('Topology'):
-            dims_str = topo.get('Dimensions')
-            if dims_str:
-                dims = tuple(int(d) for d in dims_str.split())
-                grid_info['node_dimensions'] = dims
-                grid_info['cell_dimensions'] = tuple(d - 1 for d in dims)
-
-        # Collect all data items to read
-        read_tasks = []
-
-        # Get geometry (grid coordinates)
-        for geom in grid.iter('Geometry'):
-            geom_type = geom.get('GeometryType')
-            if geom_type == 'VXVYVZ':
-                data_items = list(geom.iter('DataItem'))
-                coord_names = ['x', 'y', 'z']
-                for i, data_item in enumerate(data_items[:3]):
-                    read_tasks.append(('grid', f'grid_{coord_names[i]}', data_item))
-
-        # Get attributes (flow variables) - filter to only required ones if enabled
-        skipped_vars = []
-        for attribute in grid.iter('Attribute'):
-            name = attribute.get('Name')
-            data_item = attribute.find('DataItem')
-            if data_item is not None:
-                if load_all_vars or _is_selected_variable(name, required_vars):
-                    read_tasks.append(('array', name, data_item))
-                else:
-                    skipped_vars.append(name)
-
-        # Read all data items
-        if skipped_vars:
-            tqdm.write(f"  Skipping {len(skipped_vars)} unneeded variables: {', '.join(skipped_vars[:3])}{'...' if len(skipped_vars) > 3 else ''}")
-
-        xdmf_name = os.path.basename(xdmf_path)
-        for task_type, name, data_item in tqdm(read_tasks, desc=f"  Reading {xdmf_name}", unit="var", leave=False):
-            data_3d = read_binary_data_item(data_item, xdmf_dir)
-            if data_3d is not None:
-                # Reshape flat arrays to 3D using topology dimensions if needed
-                if len(data_3d.shape) == 1 and 'cell_dimensions' in grid_info:
-                    cell_dims = grid_info['cell_dimensions']
-                    if data_3d.size == int(np.prod(cell_dims)):
-                        data_3d = data_3d.reshape(cell_dims)
-                data = _reduce_xdmf_array(
-                    data_3d,
-                    average_z=average_z,
-                    average_x=average_x,
-                )
-                if data is not data_3d:
-                    del data_3d
-                if task_type == 'grid':
-                    grid_info[name] = data
-                else:
-                    arrays[name] = data
+    arrays = load_xdmf_variables(
+        var_metadata, selected, grid_info=grid_info,
+        average_z=average_z, average_x=average_x, quiet=True)
 
     return arrays, grid_info
-
-
-# =====================================================================================================================================================
-# XDMF METADATA PARSING & SELECTIVE LOADING
-# =====================================================================================================================================================
-
-def _extract_data_item_params(data_item, xdmf_dir):
-    """
-    Extract binary read parameters from a DataItem XML element
-    without actually reading the binary file.
-
-    Returns:
-        dict with bin_path, dims, dtype, seek keys, or None if invalid
-    """
-    format_type = data_item.get('Format', 'Binary')
-    if format_type != 'Binary':
-        return None
-
-    dims_str = data_item.get('Dimensions', '')
-    dims = tuple(int(d) for d in dims_str.split()) if dims_str else None
-
-    number_type = data_item.get('NumberType', 'Float')
-    precision = int(data_item.get('Precision', '8'))
-    seek = int(data_item.get('Seek', '0'))
-
-    if number_type == 'Float':
-        dtype = np.float32 if precision == 4 else np.float64
-    elif number_type == 'Int':
-        dtype = np.int32 if precision == 4 else np.int64
-    else:
-        dtype = np.float64
-
-    bin_path_text = data_item.text.strip() if data_item.text else None
-    if bin_path_text is None:
-        return None
-
-    data_dir = os.path.normpath(os.path.join(xdmf_dir, '..', '1_data'))
-    bin_filename = os.path.basename(bin_path_text)
-    bin_path = os.path.join(data_dir, bin_filename)
-
-    if not os.path.isfile(bin_path):
-        return None
-
-    return {
-        'bin_path': bin_path,
-        'dims': dims,
-        'dtype': dtype,
-        'seek': seek,
-    }
-
-
-def _read_binary_from_params(params, stride=1):
-    """
-    Read binary data using pre-extracted parameters (from _extract_data_item_params).
-
-    Args:
-        params: dict with bin_path, dims, dtype, seek
-        stride: subsample every `stride`-th element along each axis. When >1
-            and `dims` has more than one axis, the file is memory-mapped so
-            only the strided subset is ever paged into RAM — large domains
-            no longer need to be fully resident just to build a decimated
-            (e.g. PyVista) grid.
-
-    Returns:
-        numpy array or None on failure
-    """
-    bin_path = params['bin_path']
-    dims = params['dims']
-    dtype = params['dtype']
-    seek = params['seek']
-
-    try:
-        if stride > 1 and dims and len(dims) > 1:
-            mm = np.memmap(bin_path, dtype=dtype, mode='r', offset=seek, shape=tuple(dims))
-            data = np.array(mm[tuple(slice(None, None, stride) for _ in dims)])
-            del mm
-            return data
-
-        itemsize = np.dtype(dtype).itemsize
-        if dims:
-            count = int(np.prod(dims))
-        else:
-            file_size = os.path.getsize(bin_path)
-            count = (file_size - seek) // itemsize
-
-
-        with open(bin_path, 'rb') as f:
-            f.seek(seek)
-            data = np.fromfile(f, dtype=dtype, count=count)
-
-        if dims:
-            expected_size = int(np.prod(dims))
-            if data.size >= expected_size:
-                data = data[:expected_size].reshape(dims)
-            elif data.size < expected_size:
-                print(f"Warning: Data size mismatch for {bin_path} "
-                      f"(got {data.size}, expected {expected_size})")
-
-        return data
-
-    except Exception as e:
-        print(f"Error reading {bin_path}: {e}")
-        return None
-
-
-def parse_xdmf_metadata(xdmf_path):
-    """
-    Parse XDMF file structure and return variable names, shapes, and grid info
-    without loading variable data.  Grid coordinates (small 1D arrays) are loaded.
-
-    Args:
-        xdmf_path: Path to the XDMF file
-
-    Returns:
-        tuple: (var_metadata, grid_info)
-            var_metadata: dict of {name: {'shape': tuple, 'bin_path': str,
-                          'dims': tuple, 'dtype': dtype, 'seek': int}}
-            grid_info: dict with node_dimensions, cell_dimensions,
-                       grid_x, grid_y, grid_z
-    """
-    if not os.path.isfile(xdmf_path):
-        return {}, {}
-
-    root = _parse_xdmf_xml(xdmf_path)
-    if root is None:
-        return {}, {}
-
-    var_metadata = {}
-    grid_info = {}
-    xdmf_dir = os.path.dirname(xdmf_path)
-
-    for grid in root.iter('Grid'):
-        # Get topology dimensions
-        for topo in grid.iter('Topology'):
-            dims_str = topo.get('Dimensions')
-            if dims_str:
-                dims = tuple(int(d) for d in dims_str.split())
-                grid_info['node_dimensions'] = dims
-                grid_info['cell_dimensions'] = tuple(d - 1 for d in dims)
-
-        # Load grid coordinates (small 1D arrays — always needed for slicing)
-        for geom in grid.iter('Geometry'):
-            geom_type = geom.get('GeometryType')
-            if geom_type == 'VXVYVZ':
-                data_items = list(geom.iter('DataItem'))
-                coord_names = ['x', 'y', 'z']
-                for i, data_item in enumerate(data_items[:3]):
-                    data = read_binary_data_item(data_item, xdmf_dir)
-                    if data is not None:
-                        grid_info[f'grid_{coord_names[i]}'] = data
-
-        # Extract variable metadata without loading binary data
-        for attribute in grid.iter('Attribute'):
-            name = attribute.get('Name')
-            data_item = attribute.find('DataItem')
-            if data_item is not None:
-                params = _extract_data_item_params(data_item, xdmf_dir)
-                if params is not None:
-                    # Compute effective shape (after potential reshape)
-                    raw_dims = params['dims']
-                    if raw_dims and len(raw_dims) > 1:
-                        params['shape'] = raw_dims
-                    elif 'cell_dimensions' in grid_info:
-                        cell_dims = grid_info['cell_dimensions']
-                        if raw_dims:
-                            size = int(np.prod(raw_dims))
-                        else:
-                            itemsize = np.dtype(params['dtype']).itemsize
-                            file_size = os.path.getsize(params['bin_path'])
-                            size = (file_size - params['seek']) // itemsize
-                        if size == int(np.prod(cell_dims)):
-                            params['shape'] = cell_dims
-                        else:
-                            params['shape'] = raw_dims if raw_dims else (size,)
-                    else:
-                        params['shape'] = raw_dims
-                    var_metadata[name] = params
-
-    return var_metadata, grid_info
-
-
-def load_xdmf_variables(var_metadata, selected_vars, grid_info=None,
-                        average_z=False, average_x=False, stride=1):
-    """
-    Load specific variables using pre-parsed XDMF metadata.
-
-    Args:
-        var_metadata: dict from parse_xdmf_metadata
-        selected_vars: list of variable names to load
-        grid_info: grid info dict (for reshaping flat arrays)
-        average_z: If True, average over the z direction for 3D arrays.
-        average_x: If True, average over the x direction for 3D arrays.
-        stride: subsample every `stride`-th cell along each axis at read
-            time (see _read_binary_from_params) so large domains don't need
-            to be fully loaded just to be decimated afterwards.
-
-    Returns:
-        dict: {variable_name: numpy_array}. Singleton dimensions are automatically
-              squeezed (e.g. tsp_avg slice files become true 2D).
-    """
-    arrays = {}
-
-    for name in tqdm(selected_vars, desc="Loading selected variables", unit="var"):
-        if name not in var_metadata:
-            tqdm.write(f"  Variable '{name}' not found in metadata, skipping")
-            continue
-
-        params = var_metadata[name]
-        data = _read_binary_from_params(params, stride=stride)
-        if data is None:
-            continue
-
-        # Reshape flat arrays to 3D using cell dimensions
-        if len(data.shape) == 1 and grid_info and 'cell_dimensions' in grid_info:
-            cell_dims = grid_info['cell_dimensions']
-            if data.size == int(np.prod(cell_dims)):
-                data = data.reshape(cell_dims)
-
-        data = _reduce_xdmf_array(data, average_z=average_z, average_x=average_x)
-
-        arrays[name] = data
-        tqdm.write(f"  Loaded {name}: shape {data.shape}")
-
-    return arrays
 
 
 def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None, data_types=None,
@@ -1461,12 +2015,11 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
         timestep (str, optional): Timestep identifier for dictionary key
         load_all_vars (bool, optional): If True, load all variables. If False, only required ones.
         data_types (list, optional): List of data types to load. If None, loads all files.
-            Valid types: 'inst', 't_avg',
-            or specific combinations like 't_avg_flow', 't_avg_thermo', etc.
-            Note: tsp_avg data is stored as .txt files in 1_data/ and is
-            NOT available as XDMF.  Use the text data loader for tsp_avg data.
+            Valid types: 'inst', 't_avg', 'tsp_avg', or specific combinations
+            like 't_avg_flow', 'tsp_avg_thermo', etc.
             Examples:
                 - ['t_avg'] loads only time-averaged files (flow, thermo, mhd)
+                - ['tsp_avg'] loads the time-and-space averaged planes
                 - ['inst'] loads all instantaneous files (flow, thermo, mhd)
                 - ['t_avg_flow'] loads only time-averaged flow files
 
@@ -1514,24 +2067,27 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
         for f in existing_files:
             filename = os.path.basename(f)
             for dtype in data_types:
-                if dtype == 't_avg':
-                    if 't_avg_' in filename:
-                        filtered_files.append(f)
-                        break
+                if dtype == 'tsp_avg':
+                    match = 'tsp_avg_' in filename
+                elif dtype == 't_avg':
+                    # 'tsp_avg_' also contains 't_avg'-like text; require the
+                    # purely temporal prefix.
+                    match = '_t_avg_' in f'_{filename}'
                 elif dtype == 'inst':
-                    if 't_avg' not in filename:
-                        filtered_files.append(f)
-                        break
+                    match = 't_avg' not in filename
                 else:
-                    if dtype in filename:
-                        filtered_files.append(f)
-                        break
+                    match = dtype in filename
+                if match:
+                    filtered_files.append(f)
+                    break
         existing_files = filtered_files
         tqdm.write(f"Filtering for data types: {data_types}")
 
     for xdmf_file in tqdm(existing_files, desc="Processing XDMF files", unit="file"):
         try:
             tqdm.write(f"Opening file: {xdmf_file}")
+            # tsp_avg output is already space-averaged over its periodic
+            # direction, so the squeezed singleton must not be averaged again.
             is_tsp_avg = 'tsp_avg_' in os.path.basename(xdmf_file)
 
             arrays, file_grid_info = parse_xdmf_file(
@@ -1539,11 +2095,13 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
                 load_all_vars=load_all_vars,
                 required_vars=required_vars,
                 average_z=False if is_tsp_avg else average_z,
-                average_x=average_x
+                average_x=False if is_tsp_avg else average_x,
             )
 
             if arrays:
-                if 't_avg' in xdmf_file:
+                if 'tsp_avg' in xdmf_file:
+                    file_type = 'tsp_avg'
+                elif 't_avg' in xdmf_file:
                     file_type = 't_avg'
                 elif '_mhd_' in xdmf_file:
                     file_type = 'mhd'
@@ -1558,16 +2116,10 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
                         tqdm.write(f"Grid info: node_dimensions={grid_info['node_dimensions']}, cell_dimensions={grid_info.get('cell_dimensions', 'N/A')}")
 
                 for var_name, var_data in arrays.items():
-                    if var_name.startswith('tsp_avg_'):
-                        base_name = var_name[8:]
-                    elif var_name.startswith('t_avg_'):
-                        base_name = var_name[6:]
-                    else:
-                        base_name = var_name
-                    inner_dict[base_name] = var_data
+                    inner_dict[_strip_avg_prefix(var_name)] = var_data
                 tqdm.write(f"Successfully extracted {len(arrays)} arrays from {file_type} file")
             else:
-                tqdm.write(f"Warning: No valid output from {xdmf_file}, file missing or empty")
+                tqdm.write(f"No requested variables in {os.path.basename(xdmf_file)} — skipped")
 
         except Exception as e:
             tqdm.write(f"Error processing {xdmf_file}: {str(e)}")
@@ -1581,6 +2133,8 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
             tqdm.write(f"WARNING: {len(missing)} requested variable(s) not found in loaded files: {', '.join(missing)}")
 
     return visu_arrays_dic, grid_info
+
+
 
 
 def extract_grid_info_from_arrays(grid_info):
