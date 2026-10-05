@@ -123,3 +123,73 @@ def test_interpolate_wall_point_extrapolates_to_each_end():
     lower = float(op.interpolate_wall_point(u, y_coords=yc, wall='lower'))
     upper = float(op.interpolate_wall_point(u, y_coords=yc, wall='upper'))
     assert abs(lower) < 1e-3 and abs(upper) < 1e-3     # no slip at both walls
+
+
+# ---------------------------------------------------------------------------
+# Plot labelling and robustness. These live here rather than in a GUI test
+# because they are properties of the statistics, not of any widget.
+# ---------------------------------------------------------------------------
+
+def _plotter(**overrides):
+    import turb_stats as ts
+
+    class _Module:
+        pass
+
+    module = _Module()
+    module.norm_by_u_tau_sq = True
+    module.norm_ux_by_u_tau = True
+    for key, value in overrides.items():
+        setattr(module, key, value)
+    config = ts.Config.from_module(module)
+    return ts.TurbulencePlotter(config, ts.PlotConfig(), None)
+
+
+def test_dimensionless_statistics_are_not_labelled_as_normalised():
+    """The value and label exclusion lists were separate and drifted: the
+    turbulent Prandtl number was computed unnormalised but captioned
+    Pr_t/u_tau^2."""
+    import turb_stats as ts
+    plotter = _plotter()
+    for name in ts.NOT_NORMALISED_BY_U_TAU_SQ:
+        label = plotter._get_stat_ylabel(name, name)
+        assert 'u_\\tau^2' not in label, (name, label)
+
+
+def test_dimensional_statistics_still_say_they_are_normalised():
+    plotter = _plotter()
+    assert 'u_\\tau^2' in plotter._get_stat_ylabel('u_prime_sq', 'u_prime_sq')
+    assert 'u_\\tau^2' in plotter._get_stat_ylabel('TKE', 'TKE')
+
+
+def test_an_all_nan_series_is_skipped_not_plotted():
+    """Pr_t is 0/0 until the temperature fluctuations develop. Drawing it
+    raised IndexError inside matplotlib's marker spacing and took out every
+    other figure with it."""
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib.figure import Figure
+
+    plotter = _plotter()
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    x = np.linspace(-1.0, 1.0, 80)
+    plotter._plot_line(ax, x, np.full_like(x, np.nan), 'all nan', 'C0', marker='o')
+    assert len(ax.lines) == 0
+    fig.canvas.draw()                       # the crash was at draw time
+
+
+def test_a_partly_finite_series_is_still_drawn():
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib.figure import Figure
+
+    plotter = _plotter()
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    x = np.linspace(-1.0, 1.0, 80)
+    y = np.full_like(x, np.nan)
+    y[30:40] = 1.0
+    plotter._plot_line(ax, x, y, 'partly finite', 'C0', marker='o')
+    assert len(ax.lines) == 1
+    fig.canvas.draw()

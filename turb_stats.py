@@ -2644,10 +2644,8 @@ class TurbulenceStatsPipeline:
                     # Normalize (element-wise — works for any ndim). Anisotropy
                     # invariants are already dimensionless (built from a
                     # normalized tensor), so u_tau^2 normalization doesn't apply.
-                    if self.config.norm_by_u_tau_sq and stat.name not in (
-                        'temperature', 'coeff_friction', 'heat_transfer_coeff', 'nusselt_number', 'turb_prandtl',
-                        'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
-                    ):
+                    if (self.config.norm_by_u_tau_sq
+                            and stat.name not in NOT_NORMALISED_BY_U_TAU_SQ):
                         normed = op.norm_turb_stat_wrt_u_tau_sq(ux_data, values, ref_Re, y_coords=y_coords)
                     else:
                         normed = values
@@ -2721,6 +2719,17 @@ class TurbulenceStatsPipeline:
 # =====================================================================================================================================================
 # PLOTTING CLASS
 # =====================================================================================================================================================
+
+#: Statistics the u_tau^2 normalisation does not apply to: already
+#: dimensionless, or carrying units of their own. Shared by the code that
+#: scales the values and the code that labels the axis - they were separate
+#: lists and drifted, so the turbulent Prandtl number was plotted correctly
+#: but captioned Pr_t/u_tau^2.
+NOT_NORMALISED_BY_U_TAU_SQ = frozenset({
+    'temperature', 'coeff_friction', 'heat_transfer_coeff', 'nusselt_number',
+    'turb_prandtl', 'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
+})
+
 
 class TurbulencePlotter:
     """Handles all plotting logic for turbulence statistics.
@@ -2864,10 +2873,8 @@ class TurbulencePlotter:
         if stat_name == 'ux_velocity' and self.config.norm_ux_by_u_tau:
             return '$U_x/u_\\tau$'
 
-        if self.config.norm_by_u_tau_sq and stat_name not in (
-            'coeff_friction', 'heat_transfer_coeff', 'nusselt_number',
-            'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
-        ):
+        if (self.config.norm_by_u_tau_sq
+                and stat_name not in NOT_NORMALISED_BY_U_TAU_SQ):
             if isinstance(base, str) and base.startswith('$') and base.endswith('$'):
                 return base[:-1] + '/u_\\tau^2$'
             return f'{base} / $u_\\tau^2$'
@@ -3653,7 +3660,26 @@ class TurbulencePlotter:
 
     def _plot_line(self, ax, x: np.ndarray, y: np.ndarray, label: str, color: str,
                    linestyle='-', marker='') -> None:
-        """Plot a single line with appropriate scale"""
+        """Plot a single line with appropriate scale.
+
+        A series with no finite values is skipped rather than drawn. Some
+        statistics are genuinely undefined over part of a run - the turbulent
+        Prandtl number is 0/0 until the temperature fluctuations develop -
+        and matplotlib's display-space marker spacing raises IndexError on a
+        path with no points, which would take out every other figure too.
+        """
+        y = np.asarray(y, dtype=float)
+        if not np.isfinite(y).any():
+            print(f"  Skipping '{label}': undefined everywhere "
+                  f"(no finite values to plot).")
+            # Say so on the axes too, so a blank panel is not mistaken for
+            # a quantity that happens to be zero.
+            if not ax.lines and not getattr(ax, '_undefined_note', False):
+                ax.text(0.5, 0.5, 'undefined for this data',
+                        transform=ax.transAxes, ha='center', va='center',
+                        color='grey', fontstyle='italic')
+                ax._undefined_note = True
+            return
         markevery = self._get_markevery(len(x)) if marker else None
         plot_kwargs = {
             'label': label,
