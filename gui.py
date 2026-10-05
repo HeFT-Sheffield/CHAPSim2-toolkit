@@ -574,8 +574,11 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
         # ---- Input Data ----
         s = sec('Case Loading')
         brow(s, ' Directory containing case folders:', sv('folder_path', ''), label_above=True)
-        self._scan_lbl = ttk.Label(s, text='No folder selected.', foreground='grey')
-        self._scan_lbl.pack(anchor='w', padx=2)
+        # wraplength rather than clipping: the summary routinely runs past the
+        # width of the config column.
+        self._scan_lbl = ttk.Label(s, text='No folder selected.', foreground='grey',
+                                   wraplength=400, justify='left')
+        self._scan_lbl.pack(anchor='w', fill='x', padx=2)
         self._t_cases = trow(s, ' Case folder names (one per line)', height=2, label_above=True)
         self._t_timesteps = trow(s, ' Timesteps (one per line)', height=2, label_above=True)
         # Statistics need averaged fields; 'inst' is not offered because an
