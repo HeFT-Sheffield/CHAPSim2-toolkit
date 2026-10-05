@@ -760,6 +760,34 @@ def get_fluid_properties(medium):
         raise ValueError(f"Unknown medium: {medium}. Available options: Li, Na, Pb, Bi, LBE, FLiBe, PbLi")
 
 
+# =====================================================================================================================================================
+# INTERACTIVE PROMPTS
+# =====================================================================================================================================================
+
+def ask_number(prompt, default=None, cast=float):
+    """Read a number from the terminal, re-asking rather than giving up.
+
+    The interactive scripts ask for several numbers in a row, often after
+    something slow has already been chosen. A mistyped character used to
+    raise ValueError out of the prompt and end the session; this re-asks
+    instead. A blank line takes the default, and so does EOF, which is what
+    a piped-in list of answers runs out of.
+    """
+    suffix = '' if default is None else f' [{default}]'
+    while True:
+        try:
+            text = input(f'{prompt}{suffix}: ').strip()
+        except EOFError:
+            return default
+        if not text:
+            return default
+        try:
+            return cast(text)
+        except ValueError:
+            print(f"  '{text}' is not a number. Try again, "
+                  f"or press enter for {default}.")
+
+
 # CHAPSim2 OUTPUT LAYOUT
 # =====================================================================================================================================================
 #

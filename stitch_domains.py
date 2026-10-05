@@ -161,13 +161,25 @@ def stitch_domains(xdmf_path_1, xdmf_path_2, output_dir, output_prefix='stitched
     else:
         x2_shifted = x2
 
-    x_combined = np.concatenate([x1, x2_shifted])
+    # Both node arrays carry the node at the interface between the domains,
+    # so joining them whole describes one more cell than there is data for -
+    # the XDMF then declares 13 cells over 12 cells of field data and the
+    # reader rejects every array. Domain 2's first node is dropped: it either
+    # coincides with domain 1's last node, or x_offset widens that one
+    # interface cell, and either way the cell count has to match the data.
+    x_combined = np.concatenate([x1, x2_shifted[1:]])
 
     nx_combined = len(x_combined)
     ny = len(y1)
     nz = len(z1)
     node_dims = (nz, ny, nx_combined)
     cell_dims = (nz - 1, ny - 1, nx_combined - 1)
+
+    if not np.all(np.diff(x_combined) > 0):
+        raise ValueError(
+            'The joined x grid is not increasing. Domain 2 overlaps domain 1; '
+            'give an x_offset that places it after domain 1, or pass the '
+            'domains the other way round.')
 
     print(f"Domain 1: x = [{x1[0]:.4f}, {x1[-1]:.4f}], nx = {len(x1)}")
     print(f"Domain 2: x = [{x2_shifted[0]:.4f}, {x2_shifted[-1]:.4f}], nx = {len(x2)}")
@@ -222,6 +234,14 @@ def stitch_domains(xdmf_path_1, xdmf_path_2, output_dir, output_prefix='stitched
         write_field_binary(os.path.join(data_dir, bin_filename), combined)
         attributes.append((var_name, f'../data/{bin_filename}'))
         print(f"  {var_name}: {a1.shape} + {a2.shape} -> {combined.shape}")
+
+    if attributes:
+        stitched_nx = combined.shape[2] if combined.ndim == 3 else len(combined)
+        if stitched_nx != cell_dims[2]:
+            raise ValueError(
+                f'The joined grid describes {cell_dims[2]} cells in x but the '
+                f'stitched fields hold {stitched_nx}. The two domains do not '
+                f'abut: check x_offset.')
 
     # --- Write XDMF file ---
     # Determine grid name from the original XDMF
@@ -282,10 +302,11 @@ if __name__ == '__main__':
     # Prefix for output filenames (replaces 'domain1' in the originals)
     OUTPUT_PREFIX = 'stitched'
 
-    # X offset: spacing between domain 1's last node and domain 2's first node.
-    # Set to None if domain 2's x-coordinates are already in the correct global frame.
-    # Set to a float (e.g. the grid spacing dx) if domain 2 starts from x=0 and needs shifting.
-    X_OFFSET = None  # e.g. 0.03141593 for a typical dx
+    # X offset: where domain 2 begins relative to the end of domain 1.
+    # 0.0 abuts them, which is almost always what is wanted; a positive value
+    # widens the single cell spanning the join. Set to None if domain 2's
+    # x-coordinates are already in the correct global frame.
+    X_OFFSET = 0.0   # abutting; None if domain 2 is already in global coordinates
 
     # ==================================================================================
 

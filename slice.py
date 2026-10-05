@@ -1024,10 +1024,8 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label, default_t_avg_xdmf=
             print(f"  Full x range: {grid_x.min():.4f} to {grid_x.max():.4f}")
             crop_input = input("Crop x range? (y/n) [n]: ").strip().lower()
             if crop_input == 'y':
-                x_min_input = input(f"  x_min [{grid_x.min():.4f}]: ").strip()
-                x_max_input = input(f"  x_max [{grid_x.max():.4f}]: ").strip()
-                x_min = float(x_min_input) if x_min_input else grid_x.min()
-                x_max = float(x_max_input) if x_max_input else grid_x.max()
+                x_min = ut.ask_number('  x_min', float(grid_x.min()))
+                x_max = ut.ask_number('  x_max', float(grid_x.max()))
                 x_crop = (x_min, x_max)
                 print(f"  -> Cropping x from {x_min:.4f} to {x_max:.4f}")
 
@@ -1052,10 +1050,8 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label, default_t_avg_xdmf=
     if scale_choice == '2':
         symmetric = True
     elif scale_choice == '3':
-        vmin_input = input("vmin: ").strip()
-        vmax_input = input("vmax: ").strip()
-        vmin = float(vmin_input) if vmin_input else None
-        vmax = float(vmax_input) if vmax_input else None
+        vmin = ut.ask_number('vmin', None)
+        vmax = ut.ask_number('vmax', None)
         center_input = input("Centre custom range at zero? (y/n) [n]: ").strip().lower()
         center_zero = center_input == 'y'
         if center_zero and not (vmin is not None and vmax is not None and vmin < 0 < vmax):
@@ -1219,10 +1215,8 @@ def get_slice_config(var_metadata, grid_info, default_t_avg_xdmf=None):
             print(f"  Full x range: {grid_x.min():.4f} to {grid_x.max():.4f}")
             crop_input = input("Crop x range? (y/n) [n]: ").strip().lower()
             if crop_input == 'y':
-                x_min_input = input(f"  x_min [{grid_x.min():.4f}]: ").strip()
-                x_max_input = input(f"  x_max [{grid_x.max():.4f}]: ").strip()
-                x_min = float(x_min_input) if x_min_input else grid_x.min()
-                x_max = float(x_max_input) if x_max_input else grid_x.max()
+                x_min = ut.ask_number('  x_min', float(grid_x.min()))
+                x_max = ut.ask_number('  x_max', float(grid_x.max()))
                 x_crop = (x_min, x_max)
                 print(f"  -> Cropping x from {x_min:.4f} to {x_max:.4f}")
 
@@ -1244,10 +1238,8 @@ def get_slice_config(var_metadata, grid_info, default_t_avg_xdmf=None):
     if scale_choice == '2':
         symmetric = True
     elif scale_choice == '3':
-        vmin_input = input("vmin: ").strip()
-        vmax_input = input("vmax: ").strip()
-        vmin = float(vmin_input) if vmin_input else None
-        vmax = float(vmax_input) if vmax_input else None
+        vmin = ut.ask_number('vmin', None)
+        vmax = ut.ask_number('vmax', None)
         center_input = input("Centre custom range at zero? (y/n) [n]: ").strip().lower()
         center_zero = center_input == 'y'
         if center_zero and not (vmin is not None and vmax is not None and vmin < 0 < vmax):

@@ -459,8 +459,7 @@ def get_user_input():
 
     ref_temp = None
     if thermo_on:
-        ref_temp_input = input("Reference temperature (K) [300]: ").strip()
-        ref_temp = float(ref_temp_input) if ref_temp_input else 300.0
+        ref_temp = ut.ask_number('Reference temperature (K)', 300.0)
 
     # MHD options
     mhd_input = input("MHD enabled? (y/n) [n]: ").strip().lower()
@@ -471,8 +470,7 @@ def get_user_input():
     if forcing not in ['CMF', 'CPG']:
         forcing = 'CMF'
 
-    re_input = input("Reynolds number (bulk) [5000]: ").strip()
-    Re = float(re_input) if re_input else 5000.0
+    Re = ut.ask_number('Reynolds number (bulk)', 5000.0)
 
     # Half channel plot
     half_input = input("Plot half channel? (y/n) [n]: ").strip().lower()

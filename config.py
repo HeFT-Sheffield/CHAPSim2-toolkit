@@ -9,8 +9,11 @@ slice_label = '' # 2D slice label (e.g. 'yi8' for xz slice at y index 8), leave 
 cases = ['Tests'] # case names must match folder names exactly. Add multiple in a list.
 timesteps = ['680000'] # Add multiple in a list
 average_over_timesteps = False # calculates mean over multiple timestep files for each case
-average_x_direction = False # Averaging valid for periodic directions, set to False for spatially developing flows
-average_z_direction = True # Averaging valid for periodic directions, set to False for duct flows
+# Average only over periodic directions: averaging a direction with an inlet and an
+# outlet folds the two ends of the domain together. The case's input_chapsim.ini is
+# checked against these and a warning is printed if they disagree.
+average_x_direction = False # set False for spatially developing (inlet/outlet) flows
+average_z_direction = True # set False for duct flows, and for tsp_avg input (already averaged)
 
 forcing = 'CMF' # 'CMF' or 'CPG', constant mass flux or pressure gradient.
 Re = [5000] # indexing matches 'cases' if different Re used for different cases. Use bulk reference value for CPG.
@@ -78,6 +81,8 @@ norm_ux_by_u_tau = True
 norm_y_to_y_plus = False
 norm_temp_by_ref_temp = False
 
+geometry = 'channel' # 'channel', 'pipe', 'annulus' or 'duct'. Labels the wall-normal axis (r for cylindrical cases).
+
 # Plotting options ------------------------------------------------------------------------------------------------------------------------------------
 
 half_channel_plot = False
@@ -85,7 +90,8 @@ linear_y_scale = True
 log_y_scale = False
 display_fig = False
 save_fig = True
-save_to_path = True
+save_to_path = True # legacy: also write into folder_path. Prefer output_dir below.
+output_dir = '' # where figures are written; blank = turb_stats_plots/ beside the toolkit
 large_text_on = False # Increase axes, label, title and legend font sizes for readability
 plot_name = '' # name for saved plot files, leave blank for default naming
 
