@@ -2,9 +2,9 @@
 
 # Define input cases ==================================================================================================================================
 
-folder_path = '' # format: folder_path/case/1_data/quantity_timestep.dat
-input_format = 'visu' # 'text' (.dat) or 'visu' (.xdmf)
-xdmf_data_type = 'tsp_avg' # 't_avg' (3D) or 'tsp_avg' (2D).
+folder_path = '' # parent of the case folders; each case holds 1_data/, 2_visu/{xdmf,data,mesh}/, 3_monitor/
+input_format = 'visu' # 'visu' (.xdmf + .bin) or 'text' (tsp_avg ASCII profile tables)
+xdmf_data_type = 'tsp_avg' # 'tsp_avg' (space-averaged: a plane, or a 1D profile table) or 't_avg' (3D)
 slice_label = '' # 2D slice label (e.g. 'yi8' for xz slice at y index 8), leave blank for full 3D data
 cases = ['Tests'] # case names must match folder names exactly. Add multiple in a list.
 timesteps = ['680000'] # Add multiple in a list

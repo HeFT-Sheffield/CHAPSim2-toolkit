@@ -6,7 +6,8 @@ The kernels in operations.py are checked directly, and the whole
 TwoPointCorrelationComputer path -- XDMF discovery, fluctuation construction,
 x-station selection, slab chunking, centreline folding, half-channel reduction
 -- is checked end to end on a synthetic case written to a temporary directory
-in the same layout CHAPSim2 produces (case/2_visu/*.xdmf + case/1_data/*.bin).
+in the same layout CHAPSim2 produces
+(case/2_visu/{xdmf,data,mesh}).
 
 The synthetic field is a single spanwise Fourier mode,
 
@@ -65,7 +66,7 @@ def _attribute_xml(name, bin_name, dims):
                  Precision="8"
                  Format="Binary"
                  Dimensions="{dims[0]} {dims[1]} {dims[2]}">
-          ../1_data/{bin_name}
+          ../data/{bin_name}
         </DataItem>
       </Attribute>"""
 
@@ -78,7 +79,7 @@ def _write_xdmf(path, grid_name, nodes, attributes):
                  Precision="8"
                  Format="Binary"
                  Seek="4">
-          ../1_data/domain1_grid_{axis}.bin
+          ../mesh/domain1_grid_{axis}.bin
         </DataItem>
 """ for axis, n in (('x', nx1), ('y', ny1), ('z', nz1)))
 
@@ -105,16 +106,17 @@ def build_case(root, with_t_avg=True, t_avg_letters=('u1', 'u2'), with_tsp_avg=F
     u' amplitude differ between the lower and upper walls, and t_avg_offset
     shifts the t_avg means away from the snapshot's own spanwise mean.
     """
-    visu = root / CASE / '2_visu'
-    data = root / CASE / '1_data'
-    visu.mkdir(parents=True)
-    data.mkdir(parents=True)
+    visu = root / CASE / '2_visu' / 'xdmf'
+    data = root / CASE / '2_visu' / 'data'
+    mesh = root / CASE / '2_visu' / 'mesh'
+    for directory in (visu, data, mesh):
+        directory.mkdir(parents=True)
 
     x_nodes = np.linspace(0.0, 4.0, NX + 1)
     y_nodes = np.linspace(-1.0, 1.0, NY + 1)
     z_nodes = np.linspace(0.0, LZ, NZ + 1)
     for axis, nodes in (('x', x_nodes), ('y', y_nodes), ('z', z_nodes)):
-        _write_bin(data / f'domain1_grid_{axis}.bin', nodes, header_bytes=4)
+        _write_bin(mesh / f'domain1_grid_{axis}.bin', nodes, header_bytes=4)
 
     y_cell = 0.5 * (y_nodes[:-1] + y_nodes[1:])
     x_cell = 0.5 * (x_nodes[:-1] + x_nodes[1:])
@@ -365,8 +367,9 @@ def main():
 
             # A second snapshot of the same field with no averaged files of its own.
             second = '000200'
-            flow = (tsp_root / CASE / '2_visu' / f'domain1_flow_{TIMESTEP}.xdmf').read_text()
-            (tsp_root / CASE / '2_visu' / f'domain1_flow_{second}.xdmf').write_text(flow)
+            xdmf_dir = tsp_root / CASE / '2_visu' / 'xdmf'
+            flow = (xdmf_dir / f'domain1_flow_{TIMESTEP}.xdmf').read_text()
+            (xdmf_dir / f'domain1_flow_{second}.xdmf').write_text(flow)
             computer = TwoPointCorrelationComputer(str(tsp_root), 'uu', '', '0.5',
                                                    timesteps=[TIMESTEP, second])
             printed = io.StringIO()
