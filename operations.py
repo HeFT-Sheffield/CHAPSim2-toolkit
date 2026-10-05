@@ -1,6 +1,10 @@
 import numpy as np
 import utils
 
+# np.trapz was renamed np.trapezoid in NumPy 2.0 and the old name is deprecated.
+# Bind whichever this interpreter has so the toolkit runs on both.
+_trapezoid = getattr(np, 'trapezoid', None) or np.trapz
+
 # =====================================================================================================================================================
 # General Functions
 # =====================================================================================================================================================
@@ -274,9 +278,9 @@ def get_Re(case, cases, Re, ux_velocity, flow_forcing, y_coords=None):
         else:
             y = ux_velocity[:, 1]
         if len(Re) > 1:
-            cur_Re = Re[cases.index(case)] * (0.5 * np.trapezoid(profile, y))
+            cur_Re = Re[cases.index(case)] * (0.5 * _trapezoid(profile, y))
         else:
-            cur_Re = Re[0] * (0.5 * np.trapezoid(profile, y))
+            cur_Re = Re[0] * (0.5 * _trapezoid(profile, y))
     else:
         raise ValueError("flow_forcing must be either 'CMF' or 'CPG'")
     return cur_Re
@@ -397,8 +401,8 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
             raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 1 size {fuh.shape[1]}")
 
         # Integrate over y (wall-normal, axis=1)
-        fuh_y_integrated = np.trapezoid(fuh, y_coords_1d, axis=1)  # shape: (nz, nx)
-        fu_y_integrated = np.trapezoid(fu, y_coords_1d, axis=1)    # shape: (nz, nx)
+        fuh_y_integrated = _trapezoid(fuh, y_coords_1d, axis=1)  # shape: (nz, nx)
+        fu_y_integrated = _trapezoid(fu, y_coords_1d, axis=1)    # shape: (nz, nx)
 
         # Integrate over z (axis=0). For uniform z, mean vs integral differs by
         # a constant factor that cancels in the ratio.
@@ -412,7 +416,7 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         y_coords_1d = np.asarray(y_coords).ravel()
         if y_coords_1d.size != fuh.shape[0]:
             raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 0 size {fuh.shape[0]}")
-        bulk_enthalpy_x = np.trapezoid(fuh, y_coords_1d, axis=0) / np.trapezoid(fu, y_coords_1d, axis=0)
+        bulk_enthalpy_x = _trapezoid(fuh, y_coords_1d, axis=0) / _trapezoid(fu, y_coords_1d, axis=0)
         wall_temp = interpolate_wall_point(temp, y_coords=y_coords_1d, wall='lower')
     else:
         raise ValueError("2D or 3D data required for surface integral.")
@@ -874,7 +878,8 @@ def compute_viscous_diffusion(Re, turb_comp_dict, uiuj='total'):
 def compute_pressure_transport(tke_comp_dict, uiuj='total', u_ref=1): # think this needs 1 / rho
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
     P = tke_comp_dict['press_velocity_fluc_grad_tensor']
-    f = tke_comp_dict['f']
+    # Isothermal cases carry no density field; both forms mean 'unweighted'.
+    f = tke_comp_dict.get('f')
     G_CONST = 9.81
     if uiuj == 'total':
         return {'pressure_transport': -np.trace(P) if f is None else -np.trace(P) / (f)}
@@ -890,7 +895,8 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total', u_ref=1):
     so that Π_ij = (S[i,j] + S[j,i]) / ⟨ρ⟩.
     TKE total = 0.5 * Π_ii = trace(S) / ⟨ρ⟩ = 0.
     """ 
-    f = tke_comp_dict['f']
+    # Isothermal cases carry no density field; both forms mean 'unweighted'.
+    f = tke_comp_dict.get('f')
     S = tke_comp_dict['pressure_strain_tensor']
     G_CONST = 9.81
     if uiuj == 'total':
@@ -908,7 +914,7 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total', u_ref=1):
 #     W_ij = (1/<f>) * (∂⟨p⟩/∂x_i * ⟨u'_i⟩ + ∂⟨p⟩/∂x_j * ⟨u'_j⟩)
 #     Total TKE = (1/<f>) * Σ_k ∂⟨p⟩/∂x_k * ⟨u'_k⟩
 #     """
-#     f = tke_comp_dict['f']
+#     f = tke_comp_dict.get('f')
 #     PW = tke_comp_dict['pressure_work_tensor']
 #     rho_inv = (1.0 / f) if f is not None else 1.0
 #     if uiuj == 'total':
@@ -925,7 +931,7 @@ def compute_buoyancy_term(gravity_direction, u_ref, l_ref, tke_comp_dict, uiuj='
     """
 
     G_CONST = 9.81
-    rho = tke_comp_dict['f']
+    rho = tke_comp_dict.get('f')
     g = np.array(gravity_direction)
     f_prime_u = tke_comp_dict['f_prime_u_prime']  # list of 3 arrays (or None entries)
     u1 = tke_comp_dict['U1']
@@ -1179,7 +1185,7 @@ def compute_buoyancy(gravity_direction, u_ref, l_ref, force_dict):
     """
     G_CONST = 9.81
     g = np.array(gravity_direction)
-    dens = force_dict['f']
+    dens = force_dict.get('f')
 
     if dens is None:
         return {f'buoyancy_{i}': None for i in (1, 2, 3)}
@@ -1428,7 +1434,7 @@ def compute_integral_length_scale(rho, sep_coords, cutoff='first_zero'):
         sep_index = np.arange(rho.shape[0]).reshape((-1,) + (1,) * (rho.ndim - 1))
         rho = np.where(sep_index < first_crossing, rho, 0.0)
 
-    return np.trapezoid(rho, sep, axis=0)
+    return _trapezoid(rho, sep, axis=0)
 
 
 # =====================================================================================================================================================
