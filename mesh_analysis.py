@@ -45,6 +45,7 @@ ISTRET_2SIDES = 2
 ISTRET_BOTTOM = 3
 ISTRET_TOP = 4
 
+MSTRET_NONE = 0
 MSTRET_3FMD = 1
 MSTRET_TANH = 2
 MSTRET_POWL = 3
@@ -53,8 +54,8 @@ CASE_NAMES = {0: 'others', 1: 'channel', 2: 'pipe', 3: 'annular', 4: 'TGV3D',
               5: 'duct', 6: 'TGV2D', 7: 'Burgers', 8: 'algorithm test'}
 ISTRET_NAMES = {0: 'uniform', 1: 'centre clustered', 2: 'two-side clustered',
                 3: 'bottom clustered', 4: 'top clustered', 5: 'from input file'}
-MSTRET_NAMES = {1: '3-parameter function (Leizet2009JCP)', 2: 'hyperbolic tangent',
-                3: 'power law'}
+MSTRET_NAMES = {0: 'uniform', 1: '3-parameter function (Leizet2009JCP)',
+                2: 'hyperbolic tangent', 3: 'power law'}
 
 # ifluid index -> medium name understood by utils.get_fluid_properties.
 # Supercritical water/CO2 (1, 2) have no property class in the toolkit.
@@ -63,6 +64,97 @@ FLUID_NAMES = {1: 'supercritical water', 2: 'supercritical CO2', 3: 'sodium',
                9: 'FLiBe', 10: 'PbLi'}
 FLUID_TOOLKIT_KEYS = {3: 'sodium', 4: 'lead', 5: 'bismuth', 6: 'lbe',
                       8: 'lithium', 9: 'flibe', 10: 'pbli'}
+
+# ====================================================================================================================================================
+# Enumerated input values
+# ====================================================================================================================================================
+#
+# CHAPSim2 input files name their enumerated settings:
+#
+#     icase=  channel
+#     istret= twosides
+#     rstret= 3fmd,0.10
+#     ifluid= scp_water
+#
+# The solver's parse_icase/parse_istret/parse_rstret/parse_ifluid
+# (src/input_general.f90) each accept the name or the equivalent integer, so
+# the tables below carry both. Reading one as a plain int would quietly fall
+# back to the default and assess a mesh the solver is not going to build.
+#
+# The canonical name is listed first; it is what write_input_file() emits.
+
+ICASE_TOKENS = {
+    'channel': ICASE_CHANNEL, '1': ICASE_CHANNEL,
+    'pipe': ICASE_PIPE, '2': ICASE_PIPE,
+    'annular': ICASE_ANNULAR, '3': ICASE_ANNULAR,
+    'tgv3d': 4, '4': 4,
+    'duct': 5, '5': 5,
+    'tgv2d': 6, '6': 6,
+    'burgers': 7, '7': 7,
+    'algtest': 8, '8': 8,
+    'others': ICASE_OTHERS, '0': ICASE_OTHERS,
+}
+
+ISTRET_TOKENS = {
+    'no': ISTRET_NO, 'none': ISTRET_NO, '0': ISTRET_NO,
+    'centre': ISTRET_CENTRE, 'center': ISTRET_CENTRE, '1': ISTRET_CENTRE,
+    '2sides': ISTRET_2SIDES, 'twosides': ISTRET_2SIDES, '2': ISTRET_2SIDES,
+    'bottom': ISTRET_BOTTOM, '3': ISTRET_BOTTOM,
+    'top': ISTRET_TOP, '4': ISTRET_TOP,
+}
+
+MSTRET_TOKENS = {
+    'uniform': MSTRET_NONE, 'none': MSTRET_NONE, '0': MSTRET_NONE,
+    '3fmd': MSTRET_3FMD, '1': MSTRET_3FMD,
+    'tanh': MSTRET_TANH, '2': MSTRET_TANH,
+    'powl': MSTRET_POWL, 'powerlaw': MSTRET_POWL, '3': MSTRET_POWL,
+}
+
+IFLUID_TOKENS = {
+    'scp_water': 1, '1': 1,
+    'scp_co2': 2, '2': 2,
+    'sodium': 3, '3': 3,
+    'lead': 4, '4': 4,
+    'bismuth': 5, '5': 5,
+    'lbe': 6, '6': 6,
+    'water': 7, '7': 7,
+    'lithium': 8, '8': 8,
+    'flibe': 9, '9': 9,
+    'pbli': 10, '10': 10,
+}
+
+
+def _canonical_tokens(tokens):
+    """Invert an enum table to value -> canonical (first-listed) name."""
+    names = {}
+    for name, value in tokens.items():
+        if not name.isdigit():
+            names.setdefault(value, name)
+    return names
+
+
+ICASE_INPUT_NAMES = _canonical_tokens(ICASE_TOKENS)
+ISTRET_INPUT_NAMES = _canonical_tokens(ISTRET_TOKENS)
+MSTRET_INPUT_NAMES = _canonical_tokens(MSTRET_TOKENS)
+IFLUID_INPUT_NAMES = _canonical_tokens(IFLUID_TOKENS)
+
+
+def _enum(tokens, what):
+    """Build a cast that maps an input token to its integer enum value.
+
+    Raises ValueError on an unrecognised token so get_entry() reports it
+    rather than silently substituting a default.
+    """
+    def cast(token):
+        key = str(token).strip().strip("'\"").lower()
+        if key in tokens:
+            return tokens[key]
+        raise ValueError(
+            f"Invalid {what} '{token}'. Supported values: "
+            f"{', '.join(n for n in tokens if not n.isdigit())}.")
+
+    cast.__name__ = f'_enum_{what}'
+    return cast
 
 # ====================================================================================================================================================
 # Empirical DNS resolution limits (apx_prerun_mod parameters)
@@ -143,6 +235,16 @@ def _to_bool(token):
     return token.strip().strip('.').lower().startswith('t')
 
 
+def _first_key(sections, section, *keys):
+    """Return the first of `keys` present in `section`, else the first given.
+
+    Lets a renamed input key be read under either spelling without the
+    caller having to branch.
+    """
+    present = {entry_key for entry_key, _ in sections.get(section, [])}
+    return next((k for k in keys if k in present), keys[0])
+
+
 def get_entry(sections, section, key, cast=str, index=0, default=None, fuzzy=False):
     """
     Fetch a single value from a parsed input file.
@@ -179,7 +281,11 @@ def get_entry(sections, section, key, cast=str, index=0, default=None, fuzzy=Fal
             return default
         try:
             return cast(tokens[index])
-        except ValueError:
+        except ValueError as exc:
+            # A value that is present but unreadable means the analysis would
+            # describe a different mesh from the one the solver builds, so say
+            # so rather than quietly falling back.
+            print(f"  Warning: [{section}] {entry_key}: {exc} Using {default!r}.")
             return default
 
     return default
@@ -189,10 +295,11 @@ def get_entry(sections, section, key, cast=str, index=0, default=None, fuzzy=Fal
 # Input file generation
 # ====================================================================================================================================================
 
-# Structure taken from CHAPSim2/tests/channel_iso_periodic/input_chapsim.ini.
-# The solver reads each section sequentially, so the order of the lines within
-# a section matters; generation therefore rewrites values in place rather than
-# assembling a file from scratch.
+# Structure taken from CHAPSim2/tests/regression/channel_iso_periodic and
+# channel_scp_inout_Tw. Generation rewrites values into this text in place
+# rather than assembling a file from scratch, so everything the mesh analysis
+# does not own (boundary conditions, schemes, io, probes) stays as the solver
+# expects it.
 DEFAULT_INPUT_TEMPLATE = """[process]
 is_prerun= .false.
 is_postprocess= .false.
@@ -203,17 +310,18 @@ p_row= 0
 p_col= 0
 
 [domain]
-icase= 1
+icase= channel
 lxx= 8.0
 lyt= 1.0
 lyb= -1.0
 lzz= 4.0
 
 [flow]
-initfl= 5
+initfl= poiseuille
 irestartfrom= 0
 veloinit= 0.0,0.0,0.0
 noiselevel= 0.25
+is_active_tripping= .false.
 reni= 5000
 nreni= 10000
 ren= 5000
@@ -222,8 +330,8 @@ ren= 5000
 ncx= 64
 ncy= 80
 ncz= 64
-istret= 2
-rstret= 1,0.10
+istret= twosides
+rstret= 3fmd,0.10
 
 [bc]
 ifbcx_u= 1,1,0.0,0.0
@@ -241,31 +349,31 @@ ifbcz_v= 1,1,0.0,0.0
 ifbcz_w= 1,1,0.0,0.0
 ifbcz_p= 1,1,0.0,0.0
 ifbcz_t= 1,1,0.0,0.0
-idriven= 1
+idriven= x_massflux
 drivenfc= 0.0
 
 [scheme]
 dt= 1e-03
-itimescheme= 3
-iaccuracy= 2
-iviscous= 1
+itimescheme= rk3
+iaccuracy= cp4
+iviscous= explicit
 out_sponge_L_Re= 0.0, 100.0
 
 [thermo]
 ithermo= .false.
 icht= .false.
-igravity= 0
-ifluid= 1
+igravity= 0.0,0.0,0.0
+ifluid= water
 ref_l0= 0.05
 ref_t0= 570.0
-inittm= 7
+inittm= const
 irestartfrom= 0
 tini= 570.0
 inout_buffer= 0.0, 0.0
 qw_ramp= .false., 0, 0
 
 [mhd]
-imhd= .false.
+imhd_xdom= .false.
 NStuart= .false., 0.0
 NHartmn= .false., 0.0
 B_static= 0.0, 1.0, 0.0
@@ -285,9 +393,10 @@ visu_nskip= 1,1,1
 stat_istart= 30
 stat_level= 3
 stat_nskip= 1,1,1
-is_wrt_read_bc= .false.,.false.
-wrt_read_nfre= 0,0,0
-io_mode= 0
+is_record_xoutlet_read_xinlet= .false.,.false.
+ndbfre_ndbstart_ndbend= 20,21,60
+existing_output_policy= overwrite
+restart_data_layout= bundled
 
 [probe]
 npp= 1
@@ -296,7 +405,7 @@ pt1= 3.141593,0.0,1.5707965
 
 MHD_SECTION_TEMPLATE = """
 [mhd]
-imhd= {imhd}
+imhd_xdom= {imhd}
 NStuart= .false., 0.0
 NHartmn= {nhartmn}
 B_static= 0.0, 1.0, 0.0
@@ -344,9 +453,11 @@ def write_input_file(cfg, path, template=None):
     """
     text = template if template is not None else DEFAULT_INPUT_TEMPLATE
 
-    # (section, key) -> replacement value, matched case-insensitively
+    # (section, key) -> replacement value, matched case-insensitively.
+    # Enumerated settings are written as names, which is how CHAPSim2 input
+    # files read today; the solver still accepts the equivalent integers.
     managed = {
-        ('domain', 'icase'): str(cfg.icase),
+        ('domain', 'icase'): ICASE_INPUT_NAMES.get(cfg.icase, str(cfg.icase)),
         ('domain', 'lxx'): _fmt_real(cfg.lxx),
         ('domain', 'lyt'): _fmt_real(cfg.lyt),
         ('domain', 'lyb'): _fmt_real(cfg.lyb),
@@ -354,13 +465,16 @@ def write_input_file(cfg, path, template=None):
         ('mesh', 'ncx'): str(cfg.nc[0]),
         ('mesh', 'ncy'): str(cfg.nc[1]),
         ('mesh', 'ncz'): str(cfg.nc[2]),
-        ('mesh', 'istret'): str(cfg.istret),
-        ('mesh', 'rstret'): f"{cfg.mstret},{_fmt_real(cfg.rstret)}",
+        ('mesh', 'istret'): ISTRET_INPUT_NAMES.get(cfg.istret, str(cfg.istret)),
+        ('mesh', 'rstret'): (f"{MSTRET_INPUT_NAMES.get(cfg.mstret, cfg.mstret)},"
+                             f"{_fmt_real(cfg.rstret)}"),
         ('flow', 'ren'): _fmt_real(cfg.ren),
         ('scheme', 'dt'): _fmt_real(cfg.dt),
         ('thermo', 'ithermo'): _fmt_logical(cfg.is_thermo),
-        ('thermo', 'ifluid'): str(cfg.ifluid),
+        ('thermo', 'ifluid'): IFLUID_INPUT_NAMES.get(cfg.ifluid, str(cfg.ifluid)),
+        # imhd was renamed imhd_xdom; a loaded template may use either.
         ('mhd', 'imhd'): _fmt_logical(cfg.is_mhd),
+        ('mhd', 'imhd_xdom'): _fmt_logical(cfg.is_mhd),
         ('mhd', 'nhartmn'): (f"{_fmt_logical(cfg.is_mhd)}, "
                              f"{_fmt_real(cfg.hartmann or 0.0)}"),
     }
@@ -430,7 +544,8 @@ class DomainConfig:
         self.nxdomain = get_entry(sections, 'decomposition', 'nxdomain', int, default=1)
 
         # [domain]
-        self.icase = get_entry(sections, 'domain', 'icase', int, default=ICASE_OTHERS)
+        self.icase = get_entry(sections, 'domain', 'icase', _enum(ICASE_TOKENS, 'icase'),
+                               default=ICASE_OTHERS)
         self.lxx = get_entry(sections, 'domain', 'lxx', _to_float, default=0.0)
         self.lyt = get_entry(sections, 'domain', 'lyt', _to_float, default=1.0)
         self.lyb = get_entry(sections, 'domain', 'lyb', _to_float, default=-1.0)
@@ -441,8 +556,10 @@ class DomainConfig:
                    get_entry(sections, 'mesh', 'ncy', int, default=0),
                    get_entry(sections, 'mesh', 'ncz', int, default=0)]
 
-        self.istret = get_entry(sections, 'mesh', 'istret', int, default=ISTRET_NO)
-        self.mstret = get_entry(sections, 'mesh', 'rstret', int, index=0, default=MSTRET_3FMD)
+        self.istret = get_entry(sections, 'mesh', 'istret', _enum(ISTRET_TOKENS, 'istret'),
+                                default=ISTRET_NO)
+        self.mstret = get_entry(sections, 'mesh', 'rstret', _enum(MSTRET_TOKENS, 'rstret method'),
+                                index=0, default=MSTRET_3FMD)
         self.rstret = get_entry(sections, 'mesh', 'rstret', _to_float, index=1, default=0.0)
 
         # [flow] and [scheme]
@@ -451,7 +568,8 @@ class DomainConfig:
 
         # [thermo]
         self.is_thermo = get_entry(sections, 'thermo', 'ithermo', _to_bool, default=False)
-        self.ifluid = get_entry(sections, 'thermo', 'ifluid', int, default=0)
+        self.ifluid = get_entry(sections, 'thermo', 'ifluid', _enum(IFLUID_TOKENS, 'ifluid'),
+                                default=0)
         self.ref_t0 = get_entry(sections, 'thermo', 'ref_t0', _to_float, default=None)
 
         # [mhd] - key names vary, so match on substrings
@@ -459,10 +577,14 @@ class DomainConfig:
         self.hartmann = get_entry(sections, 'mhd', 'hartm', _to_float, index=1,
                                   default=None, fuzzy=True)
 
-        # [io], reported by the temporal estimate
-        self.is_record_xoutlet = get_entry(sections, 'io', 'is_wrt_read_bc', _to_bool,
+        # [io], reported by the temporal estimate. Renamed from is_wrt_read_bc
+        # to is_record_xoutlet_read_xinlet; both hold the same
+        # (record outlet, read inlet) pair.
+        xbc_key = _first_key(sections, 'io',
+                             'is_record_xoutlet_read_xinlet', 'is_wrt_read_bc')
+        self.is_record_xoutlet = get_entry(sections, 'io', xbc_key, _to_bool,
                                            index=0, default=False)
-        self.is_read_xinlet = get_entry(sections, 'io', 'is_wrt_read_bc', _to_bool,
+        self.is_read_xinlet = get_entry(sections, 'io', xbc_key, _to_bool,
                                         index=1, default=False)
 
         self.apply_case_defaults()
@@ -716,7 +838,8 @@ def build_y_grid(cfg):
         yc = np.arange(n_cell) * h2 + h2 * 0.5 + cfg.lyb
         return yp, yc
 
-    mappings = {MSTRET_3FMD: _map_3fmd,
+    mappings = {MSTRET_NONE: _map_uniform,
+                MSTRET_3FMD: _map_3fmd,
                 MSTRET_TANH: _map_tanh,
                 MSTRET_POWL: _map_powerlaw}
     if cfg.mstret not in mappings:
