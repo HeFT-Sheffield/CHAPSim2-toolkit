@@ -89,6 +89,45 @@ class ScrollableFrame(ttk.Frame):
         self._scroll_job = None
 
 
+def visu_catalogue(visu_folder, group):
+    """Timesteps present for each data type of one physics group.
+
+    A case does not carry every tier: statistics start partway through a run,
+    thermo is written less often than flow, and a run with no averaging has no
+    t_avg at all. Reading the directory is the only way to know which
+    combinations will actually load.
+    """
+    try:
+        entries = os.listdir(visu_folder)
+    except OSError:
+        return {}
+
+    prefixes = {'inst': f'domain1_{group}_',
+                't_avg': f'domain1_t_avg_{group}_',
+                'tsp_avg': f'domain1_tsp_avg_{group}_'}
+    found = {}
+    for name in entries:
+        if not name.endswith('.xdmf') or '_grid' in name:
+            continue
+        stem = name[:-len('.xdmf')]
+        tail = stem.rsplit('_', 1)[-1]
+        if not tail.isdigit():
+            continue
+        if '_slices_visu_' in stem:
+            if stem.startswith(prefixes['inst']):
+                found.setdefault('2d_slice', set()).add(tail)
+            continue
+        # Longest prefix first: a t_avg name also starts with the inst prefix
+        # only after the averaging tag, so test the specific ones first.
+        for dtype, prefix in sorted(prefixes.items(), key=lambda kv: -len(kv[1])):
+            if stem.startswith(prefix):
+                found.setdefault(dtype, set()).add(tail)
+                break
+    if 'inst' in found:
+        found.setdefault('2d_slice', set()).update(found['inst'])
+    return {k: sorted(v, key=int) for k, v in found.items() if v}
+
+
 def _plain_axes(axis_labels):
     r'''('$r$', '$\theta$') -> 'r-theta', for a strip that does not render LaTeX.'''
     if not axis_labels:
@@ -1324,6 +1363,9 @@ COLORMAPS = ['RdBu_r', 'viridis', 'plasma', 'inferno', 'magma',
 
 class SliceTab(ConsoleConsumer, ttk.Frame):
 
+    #: Data types this tab can display, in the order the combo offers them.
+    DTYPES = ('t_avg', 'tsp_avg', 'inst', '2d_slice')
+
     def __init__(self, parent):
         super().__init__(parent)
         self._var_meta = {}
@@ -1406,7 +1448,7 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
 
         self._dtype = tk.StringVar(value='t_avg')
         row(s, 'Data type:', lambda r: ttk.Combobox(r, textvariable=self._dtype,
-            values=['t_avg', 'tsp_avg', 'inst', '2d_slice'],
+            values=list(self.DTYPES),
             state='readonly', width=16).pack(side='left'))
 
         self._phys = tk.StringVar(value='flow')
@@ -1584,35 +1626,57 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
         if path:
             self._t_avg_path.set(path)
 
+    def _catalogue(self, group=None):
+        """What this case offers for the selected physics group."""
+        return visu_catalogue(self._visu_folder(), group or self._phys.get())
+
     def _scan(self):
         visu = self._visu_folder()
         try:
             from slice import get_available_timesteps
             tss = get_available_timesteps(visu)
             self._ts_combo['values'] = tss
-            if tss:
-                self._ts.set(tss[0])
             self._log(f'Found {len(tss)} timestep(s): {", ".join(tss)}')
+
+            cat = self._catalogue()
+            if cat:
+                self._log(f'{self._phys.get()} output -  '
+                          + ';  '.join(f'{k}: {", ".join(v)}' for k, v in sorted(cat.items())))
+            # Move off a tier this case does not have: the default is
+            # otherwise a dead end on any run with no averaged output.
+            current = self._dtype.get()
+            if cat and current not in cat:
+                # Only fall back to something this tab can actually show.
+                for fallback in ('inst', 'tsp_avg', 't_avg', '2d_slice'):
+                    if fallback in cat and fallback in self.DTYPES:
+                        self._dtype.set(fallback)
+                        self._log(f'No {current} output here - switched to {fallback}.')
+                        current = fallback
+                        break
+            steps = cat.get(current) or tss
+            if steps:
+                self._ts_combo['values'] = steps
+                self._ts.set(steps[-1])     # the latest, not iteration 0
         except Exception as exc:
             self._log(f'Scan error: {exc}')
 
     def _load_vars(self):
         xdmf, grid_select = self._xdmf_target()
         if not os.path.isfile(xdmf):
-            # Groups are written at different frequencies - a case can hold
-            # flow at a timestep that has no thermo - so name the missing file
-            # and list what that group does have.
+            # A case does not carry every tier at every timestep, so name the
+            # missing file and say what this group does have.
             self._var_lb.delete(0, tk.END)
             self._var_meta = {}
-            import utils as _ut
-            have = sorted(
-                {f.rsplit('_', 1)[-1][:-5]
-                 for f in os.listdir(os.path.dirname(xdmf))
-                 if f.startswith(f'domain1_{self._phys.get()}_') and f.endswith('.xdmf')
-                 and f.rsplit('_', 1)[-1][:-5].isdigit()}, key=int)
-            self._log(f'No such file: {os.path.basename(xdmf)}'
-                      + (f"   ({self._phys.get()} exists at: {', '.join(have)})" if have
-                         else f"   (no {self._phys.get()} output in this case)"))
+            cat = self._catalogue()
+            dtype = self._dtype.get()
+            if cat.get(dtype):
+                detail = f"{dtype} {self._phys.get()} exists at: {', '.join(cat[dtype])}"
+            elif cat:
+                detail = (f'this case has no {dtype} {self._phys.get()}; available:  '
+                          + ';  '.join(f'{k}: {", ".join(v)}' for k, v in sorted(cat.items())))
+            else:
+                detail = f'no {self._phys.get()} output in this case'
+            self._log(f'No such file: {os.path.basename(xdmf)}   ({detail})')
             return
         self._log(f'Reading metadata: {xdmf}'
                   + (f" (slice {grid_select})" if grid_select else ''))
@@ -2380,6 +2444,9 @@ class Visu3DPanel(ttk.Frame):
 
 
 class TurbVisuTab(ConsoleConsumer, ttk.Frame):
+
+    #: Volume rendering needs a full 3-D field, so only these two.
+    DTYPES = ('inst', 't_avg')
     """3D visualisation tab — renders inside the GUI panel."""
 
     def __init__(self, parent):
@@ -2456,7 +2523,7 @@ class TurbVisuTab(ConsoleConsumer, ttk.Frame):
         self._dtype = tk.StringVar(value='inst')
         row(s, 'Data type:', lambda r: ttk.Combobox(
             r, textvariable=self._dtype,
-            values=['inst', 't_avg'], state='readonly', width=16).pack(side='left'))
+            values=list(self.DTYPES), state='readonly', width=16).pack(side='left'))
 
         self._phys = tk.StringVar(value='flow')
         row(s, 'Physics:', lambda r: ttk.Combobox(
@@ -2600,15 +2667,37 @@ class TurbVisuTab(ConsoleConsumer, ttk.Frame):
                 else f'domain1_{dtype}_{phys}_{ts}.xdmf')
         return os.path.join(visu, name)
 
+    def _catalogue(self, group=None):
+        """What this case offers for the selected physics group."""
+        return visu_catalogue(self._visu_folder(), group or self._phys.get())
+
     def _scan(self):
         visu = self._visu_folder()
         try:
             from slice import get_available_timesteps
             tss = get_available_timesteps(visu)
             self._ts_combo['values'] = tss
-            if tss:
-                self._ts.set(tss[0])
             self._log(f'Found {len(tss)} timestep(s): {", ".join(tss)}')
+
+            cat = self._catalogue()
+            if cat:
+                self._log(f'{self._phys.get()} output -  '
+                          + ';  '.join(f'{k}: {", ".join(v)}' for k, v in sorted(cat.items())))
+            # Move off a tier this case does not have: the default is
+            # otherwise a dead end on any run with no averaged output.
+            current = self._dtype.get()
+            if cat and current not in cat:
+                # Only fall back to something this tab can actually show.
+                for fallback in ('inst', 'tsp_avg', 't_avg', '2d_slice'):
+                    if fallback in cat and fallback in self.DTYPES:
+                        self._dtype.set(fallback)
+                        self._log(f'No {current} output here - switched to {fallback}.')
+                        current = fallback
+                        break
+            steps = cat.get(current) or tss
+            if steps:
+                self._ts_combo['values'] = steps
+                self._ts.set(steps[-1])     # the latest, not iteration 0
         except Exception as exc:
             self._log(f'Scan error: {exc}')
 
