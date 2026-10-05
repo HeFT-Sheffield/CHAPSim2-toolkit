@@ -309,16 +309,33 @@ def load_monitor_data(file_path, max_abs_value=MAX_ABS_VALUE, sample=1):
 
 
 def column_lookup(columns):
-    """Map normalised column names to their index."""
-    return {name.strip().lower(): i for i, name in enumerate(columns)}
+    """Map column names to their index, under both exact and folded spellings.
+
+    Case matters here: a point monitor writes both 't' (time) and 'T'
+    (temperature), so folding case alone would collapse them onto one entry
+    and hand back whichever came last. Exact spellings therefore win, with
+    case-folded names kept as a fallback for the history files, whose
+    headers are prose.
+    """
+    lookup = {}
+    for i, name in enumerate(columns):
+        lookup.setdefault(name.strip().lower(), i)   # first wins when folded
+    for i, name in enumerate(columns):
+        lookup[name.strip()] = i                     # exact spelling overrides
+    return lookup
 
 
 def pick(data, lookup, *candidates):
     """Return the first column matching any candidate name, else None.
 
-    Candidates are matched case-insensitively, first exactly and then as a
-    substring, so 'bulk velocity qx' is found by 'qx' as well.
+    Matched exactly first, then case-insensitively, then as a substring, so
+    'bulk velocity qx' is found by 'qx' while 't' still means time and not
+    temperature.
     """
+    for candidate in candidates:
+        key = candidate.strip()
+        if key in lookup:
+            return data[:, lookup[key]]
     for candidate in candidates:
         key = candidate.strip().lower()
         if key in lookup:

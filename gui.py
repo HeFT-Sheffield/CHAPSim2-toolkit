@@ -16,6 +16,24 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import numpy as np
 
+# The same serif/Computer Modern setup the standalone scripts use, so a figure
+# produced in the GUI and the same figure produced by turb_stats.py or
+# monitor_points.py are not set in different typefaces.
+matplotlib.rcParams.update({
+    'font.family': 'serif',
+    'font.serif': ['Computer Modern Roman', 'CMU Serif', 'DejaVu Serif'],
+    'mathtext.fontset': 'cm',
+    'axes.unicode_minus': False,
+    # Large datasets: monitor histories run to 10^5+ points per trace.
+    'agg.path.chunksize': 10000,
+    'path.simplify_threshold': 1.0,
+})
+
+#: Figures keep a light background whatever the window theme. A dark figure
+#: would look better in the app but is what most people then paste into a
+#: paper or a white-background slide, so it would have to be redone.
+FIGURE_FACECOLOR = 'white'
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Imported at module level rather than lazily like the other tools: it pulls in
@@ -71,6 +89,49 @@ class ScrollableFrame(ttk.Frame):
         self._scroll_job = None
 
 
+def _plain_axes(axis_labels):
+    r'''('$r$', '$\theta$') -> 'r-theta', for a strip that does not render LaTeX.'''
+    if not axis_labels:
+        return '-'
+    greek = {'\\theta': 'theta', '\\phi': 'phi'}
+    return '-'.join(greek.get(str(l).strip('$'), str(l).strip('$')) for l in axis_labels)
+
+
+class MetricStrip(ttk.Frame):
+    """A row of headline numbers above a figure panel.
+
+    The Mesh Analysis tab puts the quantities a user actually checks first
+    where they can be read at a glance, instead of leaving two-thirds of the
+    window blank until a run finishes. This is that strip, reusable.
+    """
+
+    def __init__(self, parent, fields, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._labels = {}
+        for i, (key, label) in enumerate(fields):
+            cell = ttk.Frame(self)
+            cell.grid(row=0, column=i, sticky='ew', padx=3)
+            self.columnconfigure(i, weight=1)
+            ttk.Label(cell, text=label, anchor='center',
+                      font=('TkDefaultFont', 8)).pack(fill='x')
+            value = ttk.Label(cell, text='-', anchor='center',
+                              font=('TkDefaultFont', 12, 'bold'))
+            value.pack(fill='x')
+            self._labels[key] = value
+
+    def set(self, key, text, bootstyle=None):
+        widget = self._labels.get(key)
+        if widget is None:
+            return
+        widget.configure(text=text)
+        if bootstyle is not None:
+            widget.configure(bootstyle=bootstyle)
+
+    def clear(self):
+        for widget in self._labels.values():
+            widget.configure(text='-')
+
+
 class FigurePanel(ttk.Frame):
     """Embeds a matplotlib Figure with a NavigationToolbar."""
 
@@ -91,7 +152,13 @@ class FigurePanel(ttk.Frame):
             self._toolbar = None
         for w in self.winfo_children():
             w.destroy()
+        # A white figure dropped straight onto the dark theme reads as a hole
+        # in the window. Giving the figure and its canvas the same light
+        # background turns it into a sheet instead.
+        fig.patch.set_facecolor(FIGURE_FACECOLOR)
         self._canvas = FigureCanvasTkAgg(fig, master=self)
+        self._canvas.get_tk_widget().configure(
+            background=FIGURE_FACECOLOR, highlightthickness=0, borderwidth=0)
         self._toolbar = NavigationToolbar2Tk(self._canvas, self)
         self._toolbar.update()
         self._canvas.get_tk_widget().pack(fill='both', expand=True)
@@ -455,7 +522,7 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 ttk.Label(r, text=label, width=24, anchor='w').pack(side='left')
                 entry_row = r
             ttk.Entry(entry_row, textvariable=var).pack(side='left', fill='x', expand=True)
-            ttk.Button(entry_row, text='…', width=3,
+            ttk.Button(entry_row, text='Browse…', width=9,
                        command=lambda v=var: v.set(filedialog.askdirectory() or v.get())
                        ).pack(side='left')
 
@@ -493,27 +560,37 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 inner.pack(side='left', fill='x', expand=True)
             t = ttk.Text(inner, height=height, width=26, font=('TkDefaultFont', 9),
                          relief='flat', borderwidth=0)
-            sb = ttk.Scrollbar(inner, orient='vertical', command=t.yview)
-            t.configure(yscrollcommand=sb.set)
             t.pack(side='left', fill='x', expand=True)
-            sb.pack(side='left', fill='y')
+            # Scrollbar only where more than a couple of lines are expected:
+            # on a two-line box it is permanent furniture around an entry that
+            # usually holds one value.
+            if height > 2:
+                sb = ttk.Scrollbar(inner, orient='vertical', command=t.yview)
+                t.configure(yscrollcommand=sb.set)
+                sb.pack(side='left', fill='y')
             t.row = r  # outer row frame, for callers that need to show/hide the whole row
             return t
 
         # ---- Input Data ----
         s = sec('Case Loading')
         brow(s, ' Directory containing case folders:', sv('folder_path', ''), label_above=True)
-        self._t_cases = trow(s, ' Case folder names (one per line)', height=3, label_above=True)
-        self._t_cases.insert('1.0', 'Tests')
-        self._t_timesteps = trow(s, ' Timesteps (one per line)', height=3, label_above=True)
-        self._t_timesteps.insert('1.0', '680000')
+        self._scan_lbl = ttk.Label(s, text='No folder selected.', foreground='grey')
+        self._scan_lbl.pack(anchor='w', padx=2)
+        self._t_cases = trow(s, ' Case folder names (one per line)', height=2, label_above=True)
+        self._t_timesteps = trow(s, ' Timesteps (one per line)', height=2, label_above=True)
+        # Statistics need averaged fields; 'inst' is not offered because an
+        # instantaneous snapshot has no Reynolds stresses to report.
         crow(s, ' Input format', sv('input_format', 'xdmf'), ['xdmf', 'text'])
-        crow(s, ' Data type', sv('xdmf_data_type', 'tsp_avg'), ['tsp_avg', 't_avg', 'inst'])
+        crow(s, ' Data type', sv('xdmf_data_type', 'tsp_avg'), ['tsp_avg', 't_avg'])
+        self.vars['folder_path'].trace_add('write', lambda *_: self._scan_cases())
 
-        s = sec('Isothermal Input Data')
+        # Re and the forcing apply to every case, thermal or not, so they are
+        # not filed under the thermal input.
+        s = sec('Flow Parameters')
         self._t_re = trow(s, ' Bulk Reynolds no. (one per case if different)', height=2, label_above=True)
         self._t_re.insert('1.0', '5000')
         crow(s, ' Flow forcing', sv('forcing', 'CMF'), ['CMF', 'CPG'])
+        crow(s, ' Geometry', sv('geometry', 'channel'), ['channel', 'pipe', 'annulus', 'duct'])
 
         # ---- Thermal / MHD ----
         s = sec('Thermal / MHD Input Data')
@@ -616,11 +693,31 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
 
         # ---- Plotting ----
         s = sec('Plotting')
-        crow(s, 'Domain', sv('channel_plot_mode', 'full channel'),
-             ['full channel', 'half channel', 'surface plot'])
-        crow(s, 'Half channel side', sv('half_channel_side', 'lower'), ['lower', 'upper', 'average'])
+        domain_row = crow(s, 'Domain', sv('channel_plot_mode', 'full channel'),
+                          ['full channel', 'half channel', 'surface plot'])
+        # A pipe has one wall and an axis, so there is no second side to pick
+        # and nothing to fold about; the row is hidden for those geometries.
+        half_side_row = crow(s, 'Half channel side', sv('half_channel_side', 'lower'),
+                             ['lower', 'upper', 'average'])
         crow(s, 'Axis scale', sv('axis_scale', 'linear'), ['linear', 'log'])
         chk(s, 'Large text', bv('large_text_on', False))
+
+        # ---- Output ----
+        s = sec('Output')
+        chk(s, 'Save figures to disk', bv('save_fig', True))
+        brow(s, ' Output directory:', sv('output_dir', ''), label_above=True)
+        ttk.Label(s, text='Blank = turb_stats_plots/ beside the toolkit.',
+                  foreground='grey').pack(anchor='w', padx=2)
+
+        def _update_geometry_rows(*_a):
+            two_walled = self.vars['geometry'].get() in ('channel', 'duct')
+            half_side_row.pack_forget()
+            if two_walled and self.vars['channel_plot_mode'].get() == 'half channel':
+                half_side_row.pack(fill='x', pady=1, after=domain_row)
+
+        self.vars['geometry'].trace_add('write', _update_geometry_rows)
+        self.vars['channel_plot_mode'].trace_add('write', _update_geometry_rows)
+        _update_geometry_rows()
 
         # ---- Reference Data ----
         s = sec('Reference Data')
@@ -694,7 +791,60 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
 
     # ------ Plot panel (right) -------------------------------------------------------
 
+    def _scan_cases(self):
+        """Report what the chosen folder actually contains.
+
+        An empty result is otherwise indistinguishable from a wrong path:
+        the run just prints 'no files found' several screens later.
+        """
+        folder = self.vars['folder_path'].get().strip()
+        if not folder or not os.path.isdir(folder):
+            self._scan_lbl.configure(text='No folder selected.', foreground='grey')
+            return
+        try:
+            import utils as ut
+            cases = []
+            for name in sorted(os.listdir(folder)):
+                case_dir = os.path.join(folder, name)
+                if not os.path.isdir(case_dir):
+                    continue
+                steps = ut.find_available_timesteps(case_dir)
+                profiles = ut.find_profile_bundles(case_dir)
+                if steps or profiles:
+                    cases.append((name, steps, sorted({t for _, t in profiles})))
+        except Exception as exc:
+            self._scan_lbl.configure(text=f'Scan failed: {exc}', foreground='orange')
+            return
+
+        if not cases:
+            self._scan_lbl.configure(
+                text='No CHAPSim2 cases found here (looked for 2_visu/).', foreground='orange')
+            return
+
+        steps = sorted({t for _, ss, _ in cases for t in ss}, key=int)
+        shown = ', '.join(steps[:8]) + ('…' if len(steps) > 8 else '')
+        self._scan_lbl.configure(
+            text=f'{len(cases)} case(s): ' + ', '.join(n for n, _, _ in cases[:4])
+                 + ('…' if len(cases) > 4 else '')
+                 + (f'   timesteps: {shown}' if steps else '   (profile tables only)'),
+            foreground='')
+
+        # Prefill, but never overwrite what the user has already typed.
+        if not self._t_cases.get('1.0', tk.END).strip():
+            self._t_cases.insert('1.0', '\n'.join(n for n, _, _ in cases))
+        if steps and not self._t_timesteps.get('1.0', tk.END).strip():
+            self._t_timesteps.insert('1.0', steps[-1])
+
     def _build_plot(self, parent):
+        # The numbers a user checks first, shown above the figure so the pane
+        # is not blank until a run finishes.
+        self._metrics = MetricStrip(parent, [
+            ('case', 'case'), ('timestep', 'timestep'), ('re_bulk', 'Re_bulk'),
+            ('re_tau', 'Re_tau'), ('u_tau', 'u_tau'), ('tau_w', 'tau_w'),
+            ('ny', 'wall-normal cells'), ('source', 'data'),
+        ])
+        self._metrics.pack(fill='x', padx=5, pady=(5, 0))
+
         ctrl = ttk.Frame(parent)
         ctrl.pack(fill='x', padx=5, pady=3)
         ttk.Label(ctrl, text='Figure:').pack(side='left')
@@ -706,6 +856,47 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
 
         self._panel = FigurePanel(parent, placeholder='Run the pipeline to generate plots.')
         self._panel.pack(fill='both', expand=True)
+
+    def _update_metrics(self, config, loader):
+        """Fill the headline strip from a completed run."""
+        import operations as op
+
+        def fmt(x, spec='.4g'):
+            return format(x, spec) if isinstance(x, (int, float)) else str(x)
+
+        case = config.cases[0] if config.cases else '-'
+        timestep = config.timesteps[0] if config.timesteps else '-'
+        re_bulk = config.Re[0] if config.Re else None
+        self._metrics.set('case', case)
+        self._metrics.set('timestep', str(timestep))
+        self._metrics.set('re_bulk', fmt(re_bulk) if re_bulk else '-')
+        self._metrics.set('source', config.input_format)
+
+        y = getattr(loader, 'y_coords', None)
+        self._metrics.set('ny', str(len(y)) if y is not None else '-')
+
+        # u_tau from the wall gradient, the same way the pipeline normalises.
+        try:
+            u1 = loader.get(case, 'u1', timestep)
+            if u1 is None:
+                raw = loader.get_raw_dict(case, timestep) or {}
+                u1 = raw.get('u1')
+            if u1 is not None and re_bulk and y is not None:
+                prof = np.asarray(u1)
+                while prof.ndim > 1:
+                    prof = prof.mean(axis=-1)
+                tau_w = op.compute_wall_shear_stress_from_velocity(
+                    prof, float(re_bulk), y_coords=np.asarray(y))
+                tau_w = float(np.mean(np.abs(tau_w)))
+                u_tau = float(np.sqrt(tau_w))
+                self._metrics.set('tau_w', fmt(tau_w, '.4e'))
+                self._metrics.set('u_tau', fmt(u_tau, '.5f'))
+                self._metrics.set('re_tau', fmt(u_tau * float(re_bulk), '.1f'))
+                return
+        except Exception as exc:
+            self._log(f'(headline metrics unavailable: {exc})')
+        for key in ('u_tau', 'tau_w', 're_tau'):
+            self._metrics.set(key, '-')
 
     def _on_fig_select(self, _event=None):
         key = self._fig_var.get()
@@ -813,8 +1004,10 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
             log_y_scale=v['axis_scale'].get() == 'log',
             xdmf_data_type=v['xdmf_data_type'].get(),
             display_fig=False,          # always embedded; never plt.show()
-            save_fig=True,
-            save_to_path=True,
+            save_fig=v['save_fig'].get(),
+            # Figures go where the user asked, not into their case folders.
+            save_to_path=False,
+            output_dir=v['output_dir'].get().strip(),
             large_text_on=v['large_text_on'].get(),
             plot_name='',
             ux_velocity_log_ref_on=v['ux_velocity_log_ref_on'].get(),
@@ -888,6 +1081,7 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                     plotter.save_figures_by_class(figs)
 
                 self.after(0, lambda: self._update_figures(figs))
+                self.after(0, lambda: self._update_metrics(config, loader))
                 print('Done.')
             except Exception:
                 traceback.print_exc()
@@ -926,6 +1120,7 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 'two_point_corr_components': 'uu', 'two_point_corr_y_coords': '',
                 'two_point_corr_x_coords': '', 'two_point_corr_max_sep': 0,
                 'two_point_corr_mean_mode': 't_avg',
+                'output_dir': '', 'geometry': 'channel',
             }
             bool_fields = {
                 'thermo_on': False, 'mhd_on': False,
@@ -946,6 +1141,7 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
                 'norm_y_to_y_plus': False, 'norm_temp_by_ref_temp': False,
                 'large_text_on': False, 'ux_velocity_log_ref_on': True,
                 'mhd_NK_ref_on': False, 'mkm180_ch_ref_on': False,
+                'save_fig': True,
                 'two_point_corr_on': False,
             }
             for name, default in str_fields.items():
@@ -1095,8 +1291,10 @@ class TurbStatsTab(ConsoleConsumer, ttk.Frame):
             f"linear_y_scale = {v['axis_scale'].get() == 'linear'}",
             f"log_y_scale = {v['axis_scale'].get() == 'log'}",
             'display_fig = False',
-            'save_fig = True',
-            'save_to_path = True',
+            f"save_fig = {v['save_fig'].get()}",
+            'save_to_path = False',
+            f"output_dir = '{v['output_dir'].get().strip()}'",
+            f"geometry = '{v['geometry'].get()}'",
             f"large_text_on = {v['large_text_on'].get()}",
             '',
             f"ux_velocity_log_ref_on = {v['ux_velocity_log_ref_on'].get()}",
@@ -1149,6 +1347,12 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
         pw.add(right, weight=1)
 
         self._build_controls(left)
+        self._metrics = MetricStrip(right, [
+            ('grid', 'grid (nz,ny,nx)'), ('coords', 'coordinates'),
+            ('plane', 'plane'), ('location', 'slice at'),
+            ('vmin', 'min'), ('vmax', 'max'), ('vmean', 'mean'),
+        ])
+        self._metrics.pack(fill='x', padx=5, pady=(5, 0))
         self._panel = FigurePanel(right, placeholder='Load variables and click Plot.')
         self._panel.pack(fill='both', expand=True)
 
@@ -1164,7 +1368,7 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
         r_path.pack(fill='x', pady=1)
         ttk.Label(r_path, text='Case folder:', width=12, anchor='w').pack(side='left')
         ttk.Entry(r_path, textvariable=self._case_path).pack(side='left', fill='x', expand=True)
-        ttk.Button(r_path, text='…', width=3, command=self._browse).pack(side='left')
+        ttk.Button(r_path, text='Browse…', width=9, command=self._browse).pack(side='left')
 
         r_scan = ttk.Frame(path_frame)
         r_scan.pack(fill='x', pady=(2, 1))
@@ -1254,7 +1458,7 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
         ttk.Label(r_ta, text='t_avg file:', width=14, anchor='w').pack(side='left')
         self._t_avg_path = tk.StringVar()
         ttk.Entry(r_ta, textvariable=self._t_avg_path, width=16).pack(side='left', fill='x', expand=True)
-        ttk.Button(r_ta, text='...', width=3, command=self._browse_t_avg).pack(side='left')
+        ttk.Button(r_ta, text='Browse…', width=9, command=self._browse_t_avg).pack(side='left')
 
         self._use_vort = tk.BooleanVar(value=False)
         r_vort = ttk.Frame(s)
@@ -1531,6 +1735,21 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
                     slice_info = (f'{plane}-plane idx={idx} ({loc:.4f}), t={ts}'
                                   if loc is not None else f'{plane}-plane idx={idx}, t={ts}')
 
+                # Headline numbers for the slice, so the pane reports what
+                # was plotted rather than only showing it.
+                if slices:
+                    first = np.asarray(slices[0][1])
+                    cells = grid.get('cell_dimensions')
+                    self.after(0, lambda m=dict(
+                        grid='×'.join(str(c) for c in cells) if cells else '-',
+                        coords=grid.get('coordinate_system', 'cartesian'),
+                        plane=_plain_axes(axis_labels),
+                        location=slice_info,
+                        vmin=f'{np.nanmin(first):.4g}',
+                        vmax=f'{np.nanmax(first):.4g}',
+                        vmean=f'{np.nanmean(first):.4g}',
+                    ): [self._metrics.set(k, v) for k, v in m.items()])
+
                 if self._combined.get() and len(slices) > 1:
                     fig = plot_combined_slices(
                         slices, coord1, coord2, axis_labels,
@@ -1596,6 +1815,11 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
         pw.add(right, weight=1)
 
         self._build_controls(left)
+        self._metrics = MetricStrip(right, [
+            ('points', 'monitor points'), ('samples', 'samples plotted'),
+            ('tstart', 't start'), ('tend', 't end'), ('dropped', 'rows dropped'),
+        ])
+        self._metrics.pack(fill='x', padx=5, pady=(5, 0))
         self._panel = FigurePanel(right, placeholder='Configure and click Run.')
         self._panel.pack(fill='both', expand=True)
 
@@ -1612,7 +1836,7 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
         r = ttk.Frame(s)
         r.pack(fill='x')
         ttk.Entry(r, textvariable=self._path).pack(side='left', fill='x', expand=True)
-        ttk.Button(r, text='…', width=3,
+        ttk.Button(r, text='Browse…', width=9,
                    command=lambda: self._path.set(filedialog.askdirectory() or self._path.get())
                    ).pack(side='left')
 
@@ -1702,6 +1926,15 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
 
         def worker():
             figures = []
+            summary = {'points': 0, 'samples': 0, 'tmin': None, 'tmax': None}
+
+            def note_time(series):
+                if series is None or len(series) == 0:
+                    return
+                lo, hi = float(np.min(series)), float(np.max(series))
+                summary['tmin'] = lo if summary['tmin'] is None else min(summary['tmin'], lo)
+                summary['tmax'] = hi if summary['tmax'] is None else max(summary['tmax'], hi)
+
             try:
                 if plt_pts:
                     for i in range(1, n_pts + 1):
@@ -1715,6 +1948,8 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                             self._log(f'No valid data in {fname}')
                             continue
                         self._log(f'Plotting {len(data)} points for {fname}…')
+                        summary['points'] += 1
+                        summary['samples'] = max(summary['samples'], len(data))
 
                         # Columns come from the file's own header, so a monitor
                         # file that gains or loses one still plots the right
@@ -1723,14 +1958,14 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                         t = mpts.pick(data, lk, 't', 'time')
                         if t is None:
                             t = data[:, 1] if data.shape[1] > 1 else data[:, 0]
+                        note_time(t)
                         u = mpts.pick(data, lk, 'u')
                         v = mpts.pick(data, lk, 'v')
                         w = mpts.pick(data, lk, 'w')
                         p = mpts.pick(data, lk, 'p')
                         phi = mpts.pick(data, lk, 'phi')
-                        # 'T' and 't' differ only by case; match temperature exactly.
-                        ti = next((k for k, n in enumerate(cols) if n.strip() == 'T'), None)
-                        T = data[:, ti] if (thermo and ti is not None) else None
+                        # 'T' resolves to temperature and 't' to time.
+                        T = mpts.pick(data, lk, 'T') if thermo else None
 
                         scalar_fields = [(lbl, arr, col) for lbl, arr, col in
                                          [('pressure', p, 'C3'), ('press. corr.', phi, 'C4'),
@@ -1782,6 +2017,8 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                         t = mpts.pick(data, lk, 'time')
                         if t is None:
                             t = data[:, 0]
+
+                        note_time(t)
 
                         # Panels are selected by column name, not position:
                         # these files have gained columns more than once, and
@@ -1873,11 +2110,20 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                         figures.append((key, fig))
 
                 self.after(0, lambda: self._update_figs(figures))
+                self.after(0, lambda sm=dict(summary): self._update_metrics(sm))
                 self._log('Done.')
             except Exception as exc:
                 self._log(f'Error: {exc}\n{traceback.format_exc()}')
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _update_metrics(self, summary):
+        fmt = lambda x: '-' if x is None else format(x, '.4g')
+        self._metrics.set('points', str(summary['points']) or '-')
+        self._metrics.set('samples', f"{summary['samples']:,}" if summary['samples'] else '-')
+        self._metrics.set('tstart', fmt(summary['tmin']))
+        self._metrics.set('tend', fmt(summary['tmax']))
+        self._metrics.set('dropped', str(summary.get('dropped', '-')))
 
     def _update_figs(self, figures):
         self._figures = figures
@@ -2171,7 +2417,7 @@ class TurbVisuTab(ConsoleConsumer, ttk.Frame):
         r = ttk.Frame(s); r.pack(fill='x', pady=1)
         ttk.Label(r, text='Case folder:', width=14, anchor='w').pack(side='left')
         ttk.Entry(r, textvariable=self._case_path).pack(side='left', fill='x', expand=True)
-        ttk.Button(r, text='…', width=3, command=self._browse).pack(side='left')
+        ttk.Button(r, text='Browse…', width=9, command=self._browse).pack(side='left')
 
         r2 = ttk.Frame(s); r2.pack(fill='x', pady=1)
         ttk.Button(r2, text='Scan for timesteps', command=self._scan).pack(side='left')
@@ -2296,7 +2542,7 @@ class TurbVisuTab(ConsoleConsumer, ttk.Frame):
         r4 = ttk.Frame(s); r4.pack(fill='x', pady=1)
         ttk.Label(r4, text='Path:', width=14, anchor='w').pack(side='left')
         ttk.Entry(r4, textvariable=self._screenshot_path).pack(side='left', fill='x', expand=True)
-        ttk.Button(r4, text='…', width=3, command=self._browse_screenshot).pack(side='left')
+        ttk.Button(r4, text='Browse…', width=9, command=self._browse_screenshot).pack(side='left')
         ttk.Button(s, text='Save screenshot', command=self._save_screenshot).pack(anchor='w', pady=2)
 
     # ------ Helpers ------------------------------------------------------------------
@@ -2829,7 +3075,7 @@ class MeshAnalysisTab(ttk.Frame):
         r = ttk.Frame(s)
         r.pack(fill='x', pady=1)
         ttk.Entry(r, textvariable=self._path).pack(side='left', fill='x', expand=True)
-        ttk.Button(r, text='…', width=3, command=self._browse).pack(side='left')
+        ttk.Button(r, text='Browse…', width=9, command=self._browse).pack(side='left')
         r2 = ttk.Frame(s)
         r2.pack(fill='x', pady=2)
         ttk.Button(r2, text='Load', command=self._load).pack(side='left', fill='x', expand=True)
