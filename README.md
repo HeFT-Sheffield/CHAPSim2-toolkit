@@ -97,6 +97,31 @@ so nothing binary lives in the repository and the expected values are analytic.
 changing. Those tests skip themselves when the solver is not checked out
 alongside; set `CHAPSIM2_TESTS` to point at its `tests/` directory.
 
+## Authors and provenance:
+
+The toolkit was written by **Alex Old** (University of Sheffield), who remains
+its principal author — most of the code here is his. It is currently maintained
+by **Wei Wang** (UKRI-STFC); this repository is a fork of
+[AlexOld1/CHAPSim2_python_toolkit](https://github.com/AlexOld1/CHAPSim2_python_toolkit),
+and the intention is to maintain it under [CCP-NTH](https://ccpnth.ac.uk/)
+alongside the [CHAPSim2 solver](https://github.com/CHAPSim/CHAPSim2).
+
+Please cite it using `CITATION.cff` (GitHub's "Cite this repository" button).
+
+Licensed under the MIT Licence; see `LICENSE`. Note that the CHAPSim2 solver
+itself is BSD-3-Clause and copyright UKRI-STFC — the two are separate works
+under separate licences.
+
+The October 2026 work — compatibility with current CHAPSim2 output, the test
+suite, CI and the GUI changes — was carried out with AI assistance; the
+individual commits record this in their `Co-Authored-By` trailers.
+
+## Acknowledgments:
+
+CHAPSim2 and this toolkit are developed under the project of
+[CCP-NTH](https://ccpnth.ac.uk/), with computational support from CoSeC, the
+Computational Science Centre for Research Communities.
+
 ## Reference Data:
 
 Isothermal channel (MKM180), square duct (KTH) reference data is provided as well as isothermal and heated MHD reference data (NK). All reference data is openly accessible from published sources. Copyright for reference datasets remains with the original authors/publishers. See individual data files for citations.

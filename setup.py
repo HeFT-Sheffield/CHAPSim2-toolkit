@@ -9,11 +9,19 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="chapsim2-toolkit",
     version="0.1.0",
-    author="Alex",
+    # Alex Old wrote the toolkit and remains its author; the maintainer
+    # field is the one that changes hands.
+    author="Alex Old",
+    maintainer="Wei Wang",
+    maintainer_email="wei.wang@stfc.ac.uk",
     description="A Python post-processing toolkit for CHAPSim2 DNS solver",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/AlexOld1/CHAPSim2_python_toolkit",
+    url="https://github.com/weiwangstfc/CHAPSim2-toolkit",
+    project_urls={
+        "Original repository": "https://github.com/AlexOld1/CHAPSim2_python_toolkit",
+        "CHAPSim2 solver": "https://github.com/CHAPSim/CHAPSim2",
+    },
     # NOTE: the modules sit at the top level with no __init__.py, so
     # find_packages() returns nothing and an install places only metadata.
     # The toolkit is therefore run from a checkout; `pip install .[gui,3d]`
