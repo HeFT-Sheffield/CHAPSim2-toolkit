@@ -1,0 +1,71 @@
+name: tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest version setup.py claims, and a current one. NumPy 2.0
+        # renamed trapz to trapezoid, so the two ends of this range exercise
+        # genuinely different library behaviour.
+        python-version: ['3.9', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # pyvista and ttkbootstrap are only needed by the 3D tab and the
+          # GUI, neither of which runs here, so the runtime set is kept small.
+          pip install numpy matplotlib tqdm pytest
+
+      - name: Report the versions actually under test
+        run: python -c "import numpy, matplotlib; print('numpy', numpy.__version__, '| matplotlib', matplotlib.__version__)"
+
+      - name: Tests
+        env:
+          MPLBACKEND: Agg
+        # The tests that read CHAPSim2's own output skip themselves when the
+        # solver is not checked out, which on a runner it never is. The rest
+        # build their cases on disk and need nothing external.
+        run: python -m pytest tests -v
+
+      - name: Verify the budget terms against reference data
+        env:
+          MPLBACKEND: Agg
+        run: python code_verification/verify_budget_terms.py
+
+      - name: Verify the two-point correlation against analytic cases
+        env:
+          MPLBACKEND: Agg
+        run: python code_verification/verify_two_point_correlation.py
+
+      - name: Check every module imports without a display
+        env:
+          MPLBACKEND: Agg
+        run: |
+          for module in utils operations turb_stats slice monitor_points \
+                        mesh_analysis quick_turb_stats help_content stitch_domains; do
+            python -c "import $module" || exit 1
+          done
+
+      - name: Check the bundled runner works without pytest
+        env:
+          MPLBACKEND: Agg
+        # run_tests.py falls back to its own runner on machines where
+        # installing pytest is awkward, which is most clusters. That path
+        # has to keep working, so it is exercised explicitly.
+        run: python run_tests.py --no-pytest -q

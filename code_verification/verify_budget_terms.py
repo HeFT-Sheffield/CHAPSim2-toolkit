@@ -8,6 +8,7 @@ Code assumes homogeneity in x and z directions.
 
 import sys
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -192,5 +193,8 @@ for ax in axes[-1]:
 fig.suptitle("Ruu Budget Verification — operations.py vs Chan180 FD2", fontsize=14)
 fig.tight_layout()
 plt.savefig(Path(__file__).parent / "budget_Ruu_verification.png", dpi=150)
-plt.show()
+# Only pop a window when there is one to pop: under a non-interactive
+# backend (CI, a cluster, a headless run) show() just warns.
+if matplotlib.get_backend().lower() not in ('agg', 'pdf', 'ps', 'svg', 'template'):
+    plt.show()
 print("\nPlot saved to budget_Ruu_verification.png")

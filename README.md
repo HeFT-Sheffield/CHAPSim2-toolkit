@@ -1,4 +1,7 @@
 # CHAPSim2-toolkit
+
+[![tests](https://github.com/weiwangstfc/CHAPSim2-toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/weiwangstfc/CHAPSim2-toolkit/actions/workflows/tests.yml)
+
 A python post-processing and toolkit program based on NumPy and Matplotlib for DNS solver CHAPSim2.
 
 ## Install:
@@ -71,6 +74,8 @@ python run_tests.py -k cylindrical  # tests matching a name
 
 Uses pytest when it is installed and falls back to a built-in runner when it is
 not, so the suite also runs on a cluster where installing packages is awkward.
+GitHub Actions runs the same commands on every push and pull request, on the
+oldest and newest Python the package claims to support.
 
 Most tests build small synthetic cases on disk in the formats CHAPSim2 writes,
 so nothing binary lives in the repository and the expected values are analytic.
