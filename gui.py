@@ -3662,6 +3662,70 @@ class LazyTab(ttk.Frame):
         return self.inner
 
 
+class HelpTab(ttk.Frame):
+    """Topic list on the left, the chosen topic on the right.
+
+    The text lives in help_content.py so the wording can be revised without
+    touching widget code. It is rendered fixed-pitch and unwrapped, because
+    the bodies use aligned two-column layouts that re-wrapping would break.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        import help_content
+        self._topics = list(help_content.TOPICS)
+        self._build_ui()
+        self._show(0)
+
+    def _build_ui(self):
+        pw = ttk.Panedwindow(self, orient='horizontal')
+        pw.pack(fill='both', expand=True, padx=6, pady=6)
+
+        left = ttk.Frame(pw, width=210)
+        left.pack_propagate(False)
+        pw.add(left, weight=0)
+        ttk.Label(left, text='Topics', font=('TkDefaultFont', 9, 'bold')
+                  ).pack(anchor='w', padx=4, pady=(2, 4))
+        self._list = ttk.Listbox(left, exportselection=False, activestyle='none',
+                                 relief='flat', borderwidth=0)
+        for title, _ in self._topics:
+            self._list.insert(tk.END, title)
+        self._list.pack(fill='both', expand=True, padx=2)
+        self._list.bind('<<ListboxSelect>>', self._on_select)
+
+        right = ttk.Frame(pw)
+        pw.add(right, weight=1)
+        # hbar=True also sets wrap='none', which is what keeps the aligned
+        # option tables in the text readable.
+        self._text = ttk.ScrolledText(right, state='disabled', hbar=True,
+                                      font=('Monospace', 10))
+        self._text.pack(fill='both', expand=True)
+
+    def _on_select(self, _event=None):
+        sel = self._list.curselection()
+        if sel:
+            self._show(sel[0])
+
+    def _show(self, index):
+        if not 0 <= index < len(self._topics):
+            return
+        self._list.selection_clear(0, tk.END)
+        self._list.selection_set(index)
+        self._text.configure(state='normal')
+        self._text.delete('1.0', tk.END)
+        self._text.insert('1.0', self._topics[index][1])
+        self._text.configure(state='disabled')
+        self._text.see('1.0')
+
+    def show_topic(self, title):
+        """Jump to a topic by title; used by the Help button on the case bar."""
+        for i, (name, _) in enumerate(self._topics):
+            if name.lower() == str(title).lower():
+                self._show(i)
+                return True
+        return False
+
+
 class App(ttk.Window):
 
     TABS = [
@@ -3670,6 +3734,7 @@ class App(ttk.Window):
         ('  Slice Visualisation  ',   lambda: SliceTab),
         ('  3D Visualisation  ',      lambda: TurbVisuTab),
         ('  Turbulence Statistics  ', lambda: TurbStatsTab),
+        ('  Help  ',                  lambda: HelpTab),
     ]
 
     def __init__(self):
@@ -3725,6 +3790,8 @@ class App(ttk.Window):
                    command=self._browse_case).pack(side='left')
         ttk.Button(bar, text='Apply to all tabs', width=17,
                    command=self._apply_case).pack(side='left', padx=4)
+        ttk.Button(bar, text='Help', width=6,
+                   command=self.show_help).pack(side='left')
         self._case_summary = ttk.Label(parent, text='No case selected.',
                                        foreground='grey', wraplength=1200,
                                        justify='left')
@@ -3770,6 +3837,16 @@ class App(ttk.Window):
         if profiles:
             bits.append(f'{len(profiles)} profile table(s)')
         return '   |   '.join(bits)
+
+    def show_help(self, topic='How to use'):
+        """Open the Help tab, on a given topic when one is named."""
+        for i, holder in enumerate(self._holders):
+            if self.TABS[i][1]() is HelpTab:
+                self._nb.select(holder)
+                holder.realise()
+                if isinstance(holder.inner, HelpTab):
+                    holder.inner.show_topic(topic)
+                return
 
     def _on_tab_changed(self, _event=None):
         self._realise_current()
