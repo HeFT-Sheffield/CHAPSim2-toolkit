@@ -598,7 +598,7 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
     ax.set_xlabel(axis_labels[0])
     ax.set_ylabel(axis_labels[1])
     ax.set_title(f'{variable_label(variable_name)} {slice_info}')
-    ax.set_aspect('equal', adjustable='box')
+    ax.set_aspect(ut.plot_aspect(axis_labels), adjustable='box')
 
     # Print statistics
     print(f"\nSlice statistics for {variable_name}:")
@@ -765,7 +765,7 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
         ax.set_xlabel(axis_labels[0])
         ax.set_ylabel(axis_labels[1])
         ax.set_title(f'{variable_label(var_name)}')
-        ax.set_aspect('equal', adjustable='box')
+        ax.set_aspect(ut.plot_aspect(axis_labels), adjustable='box')
 
     # Hide unused subplots
     for i in range(n_vars, nrows * ncols):

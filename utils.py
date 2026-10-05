@@ -1426,6 +1426,22 @@ def axis_labels(coordinate_system=None):
     return _AXIS_LABELS.get(coordinate_system or 'cartesian', _AXIS_LABELS['cartesian'])
 
 
+#: The azimuthal label, used to spot an axis that is an angle, not a length.
+ANGLE_LABEL = _AXIS_LABELS['cylindrical']['z']
+
+
+def plot_aspect(labels):
+    """Matplotlib aspect for a plane spanned by ``labels``.
+
+    ``'equal'`` keeps a slice geometrically faithful, but only when both axes
+    are lengths. A pipe's cross-section is plotted in (r, theta): forcing
+    equal there sets one radian equal to one length unit, which squashes the
+    duct into a strip of whatever aspect 2*pi happens to give. Those planes
+    get ``'auto'`` instead.
+    """
+    return 'auto' if ANGLE_LABEL in tuple(labels) else 'equal'
+
+
 def slice_axis_info(slice_label, coordinate_system='cartesian'):
     """
     Get axis labels and grid coordinate keys for a 2D slice.

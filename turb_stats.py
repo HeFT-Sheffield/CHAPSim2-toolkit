@@ -92,6 +92,9 @@ class Config:
     ux_velocity_log_ref_on: bool
     mhd_NK_ref_on: bool
     mkm180_ch_ref_on: bool
+    #: Where figures are written. Blank keeps the historical behaviour
+    #: (folder_path when save_to_path is set, plus turb_stats_plots/).
+    output_dir: str = ''
     xdmf_data_type: str = 'tsp_avg'
 
     body_force_on: bool = False
@@ -206,6 +209,7 @@ class Config:
             ux_velocity_log_ref_on=getattr(config_module, 'ux_velocity_log_ref_on', False),
             mhd_NK_ref_on=getattr(config_module, 'mhd_NK_ref_on', False),
             mkm180_ch_ref_on=getattr(config_module, 'mkm180_ch_ref_on', False),
+            output_dir=getattr(config_module, 'output_dir', ''),
             xdmf_data_type=getattr(config_module, 'xdmf_data_type', 'tsp_avg'),
             body_force_on=getattr(config_module, 'body_force_on', False),
             body_force_component=getattr(config_module, 'body_force_component', '1'),
@@ -3771,41 +3775,54 @@ class TurbulencePlotter:
         self._series_color_map[key] = color
         return color
 
+    #: savefig options shared by every output. transparent is deliberately off:
+    #: with it set, matplotlib discards facecolor and writes an alpha
+    #: background, so the black axes and labels vanish against any dark slide
+    #: or viewer.
+    SAVEFIG_KWARGS = dict(dpi=300, bbox_inches='tight', pad_inches=0.1,
+                          facecolor='white', edgecolor='none',
+                          transparent=False, orientation='landscape')
+
     def save_figure(self, fig, suffix: str = '') -> None:
-        """Save figure to file"""
+        """Save a figure to the configured output directory.
+
+        Writes to ``output_dir`` when one is set, otherwise to
+        ``save_to_path``'s folder_path (legacy behaviour), otherwise to a
+        ``turb_stats_plots/`` directory under the working directory.
+        """
         if self.config.plot_name:
             base_name = self.config.plot_name.rsplit('.', 1)[0]
             ext = self.config.plot_name.rsplit('.', 1)[1] if '.' in self.config.plot_name else 'png'
             filename = f'{base_name}{suffix}.{ext}' if suffix else self.config.plot_name
         else:
             filename = f'turb_stats_plot{suffix}.png' if suffix else 'turb_stats_plot.png'
-        if self.config.save_to_path and self.config.folder_path:
-            os.makedirs(self.config.folder_path, exist_ok=True)
-            save_path = os.path.join(self.config.folder_path, filename)
-            fig.savefig(save_path,
-                        dpi=300,
-                        bbox_inches='tight',
-                        pad_inches=0.1,
-                        facecolor='white',
-                        edgecolor='none',
-                        transparent=True,
-                        orientation='landscape')
-            print(f'Figure saved to {save_path}')
-        elif self.config.save_to_path and not self.config.folder_path:
-            print('save_to_path is enabled but folder_path is empty; using turb_stats_plots fallback.')
 
-        output_dir = os.path.join(os.getcwd(), 'turb_stats_plots')
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, filename)
-        fig.savefig(output_path,
-                   dpi=300,
-                   bbox_inches='tight',
-                   pad_inches=0.1,
-                   facecolor='white',
-                   edgecolor='none',
-                   transparent=True,
-                   orientation='landscape')
-        print(f'Figure saved to {output_path}')
+        for directory in self.figure_output_dirs():
+            os.makedirs(directory, exist_ok=True)
+            output_path = os.path.join(directory, filename)
+            fig.savefig(output_path, **self.SAVEFIG_KWARGS)
+            print(f'Figure saved to {output_path}')
+
+    def figure_output_dirs(self) -> List[str]:
+        """Directories save_figure() writes to, in order, without duplicates.
+
+        An explicit output_dir replaces the defaults rather than adding to
+        them: writing a second copy into the user's case directory is rarely
+        what they meant, and it was previously unconditional.
+        """
+        explicit = str(getattr(self.config, 'output_dir', '') or '').strip()
+        if explicit:
+            return [os.path.expanduser(os.path.expandvars(explicit))]
+
+        dirs = []
+        if self.config.save_to_path:
+            if self.config.folder_path:
+                dirs.append(self.config.folder_path)
+            else:
+                print('save_to_path is enabled but folder_path is empty; '
+                      'using the turb_stats_plots fallback.')
+        dirs.append(os.path.join(os.getcwd(), 'turb_stats_plots'))
+        return list(dict.fromkeys(dirs))
 
     def save_figures_by_class(self, figures: Dict[str, Any]) -> None:
         """Save multiple figures, one for each class type"""

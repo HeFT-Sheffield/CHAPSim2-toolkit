@@ -83,18 +83,41 @@ def compute_robust_ylim(data, padding=0.05, max_decades=3.0):
     return (ymin, ymax)
 
 
-def apply_robust_ylim(ax, data):
+def apply_robust_ylim(ax, *series):
     """
     Apply diverged y-limits to a matplotlib axis if divergence is detected.
     Adds a text annotation when limits are clipped.
+
+    Each series is judged on its own and the surviving ranges are unioned.
+    Pooling them first would compare quantities of different magnitude:
+    on a bulk-velocity panel, qx ~ 1 against qy = 0 and qz ~ 1e-6 makes qx
+    look like the outlier, and the axis would be clipped to +/-1e-6 with the
+    one curve anybody wanted to see left off the plot.
     """
-    limits = compute_robust_ylim(data)
-    if limits is not None:
-        ax.set_ylim(limits)
-        ax.annotate('⚠ y-axis clipped (divergence detected)',
-                     xy=(0.5, 1.0), xycoords='axes fraction',
-                     ha='center', va='bottom', fontsize=8,
-                     color='red', fontstyle='italic')
+    lo = hi = None
+    clipped = False
+    for data in series:
+        data = np.asarray(data)
+        finite = data[np.isfinite(data)]
+        if finite.size == 0:
+            continue
+        limits = compute_robust_ylim(data)
+        if limits is None:
+            limits = (float(np.min(finite)), float(np.max(finite)))
+        else:
+            clipped = True
+        lo = limits[0] if lo is None else min(lo, limits[0])
+        hi = limits[1] if hi is None else max(hi, limits[1])
+
+    if not clipped or lo is None or not np.isfinite([lo, hi]).all():
+        return
+    if hi <= lo:
+        hi = lo + 1.0
+    ax.set_ylim(lo, hi)
+    ax.annotate('⚠ y-axis clipped (divergence detected)',
+                 xy=(0.5, 1.0), xycoords='axes fraction',
+                 ha='center', va='bottom', fontsize=8,
+                 color='red', fontstyle='italic')
 
 
 def add_stats_box(ax, data):
@@ -112,8 +135,10 @@ def add_stats_box(ax, data):
         f"max:  {np.max(finite):.4g}\n"
         f"med:  {np.median(finite):.4g}"
     )
-    props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
-    ax.text(0.02, 0.05, stats_text, transform=ax.transAxes,
+    # Anchored outside the axes: inside, it lands on the legend or the data
+    # on any panel whose curve runs low-left, which most monitor traces do.
+    props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85)
+    ax.text(1.01, 0.0, stats_text, transform=ax.transAxes,
             fontsize=7, verticalalignment='bottom', horizontalalignment='left',
             bbox=props, family='monospace')
 
@@ -334,9 +359,8 @@ def plot_panels(panels, time, title, out_path, display, auto_ylim, avg_window):
         ax.set_ylabel(ylabel)
         ax.legend()
         ax.grid()
-        combined = np.concatenate([v for _, v in series])
         if auto_ylim:
-            apply_robust_ylim(ax, combined)
+            apply_robust_ylim(ax, *[v for _, v in series])
         add_stats_box(ax, series[0][1])
 
     axes[-1].set_xlabel('Time')

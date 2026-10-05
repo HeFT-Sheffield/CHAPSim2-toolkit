@@ -329,12 +329,33 @@ def _mp_robust_ylim(data, padding=0.05, max_decades=3.0):
     return ymin - padding * span, ymax + padding * span
 
 
-def _mp_apply_ylim(ax, data):
-    lim = _mp_robust_ylim(data)
-    if lim is not None:
-        ax.set_ylim(lim)
-        ax.annotate('y-axis clipped', xy=(0.5, 1.0), xycoords='axes fraction',
-                    ha='center', va='bottom', fontsize=7, color='red', fontstyle='italic')
+def _mp_apply_ylim(ax, *series):
+    """Clip the y-axis only if a series genuinely diverged.
+
+    Each series is judged separately and the survivors unioned: pooling them
+    first compares quantities of different magnitude, and on a bulk-velocity
+    panel qx ~ 1 beside qy = 0 and qz ~ 1e-6 reads as the outlier, clipping
+    the one curve worth looking at off the plot.
+    """
+    lo = hi = None
+    clipped = False
+    for data in series:
+        data = np.asarray(data)
+        finite = data[np.isfinite(data)]
+        if finite.size == 0:
+            continue
+        lim = _mp_robust_ylim(data)
+        if lim is None:
+            lim = (float(finite.min()), float(finite.max()))
+        else:
+            clipped = True
+        lo = lim[0] if lo is None else min(lo, lim[0])
+        hi = lim[1] if hi is None else max(hi, lim[1])
+    if not clipped or lo is None or not np.isfinite([lo, hi]).all():
+        return
+    ax.set_ylim(lo, hi if hi > lo else lo + 1.0)
+    ax.annotate('y-axis clipped', xy=(0.5, 1.0), xycoords='axes fraction',
+                ha='center', va='bottom', fontsize=7, color='red', fontstyle='italic')
 
 
 def _mp_stats_box(ax, data):
@@ -344,9 +365,11 @@ def _mp_stats_box(ax, data):
     txt = (f"mean: {np.mean(finite):.4g}\nstd:  {np.std(finite):.4g}\n"
            f"min:  {np.min(finite):.4g}\nmax:  {np.max(finite):.4g}\n"
            f"med:  {np.median(finite):.4g}")
-    ax.text(0.02, 0.05, txt, transform=ax.transAxes, fontsize=7,
+    # Anchored outside the axes: inside, it lands on the legend or the data
+    # on any panel whose curve runs low-left, which most monitor traces do.
+    ax.text(1.01, 0.0, txt, transform=ax.transAxes, fontsize=7,
             va='bottom', ha='left', family='monospace',
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85))
 
 
 def _mp_plot_avg(ax, t, d, label, color, window):
@@ -1727,7 +1750,7 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                         axes[0].legend(fontsize=7)
                         axes[0].grid(True, alpha=0.4)
                         if auto_ylim and vels:
-                            _mp_apply_ylim(axes[0], np.concatenate([a for _, a, _ in vels]))
+                            _mp_apply_ylim(axes[0], *[a for _, a, _ in vels])
 
                         for ax, (lbl, arr, col) in zip(axes[1:], scalar_fields):
                             _mp_plot_avg(ax, t, arr, lbl, col, window)
@@ -1838,7 +1861,7 @@ class MonitorPointsTab(ConsoleConsumer, ttk.Frame):
                             ax.legend(fontsize=7)
                             ax.grid(True, alpha=0.4)
                             if auto_ylim:
-                                _mp_apply_ylim(ax, np.concatenate([a for _, a in series]))
+                                _mp_apply_ylim(ax, *[a for _, a in series])
                             _mp_stats_box(ax, series[0][1])
                         axs[-1].set_xlabel('Time')
                         fig.suptitle(title, fontsize=12)
