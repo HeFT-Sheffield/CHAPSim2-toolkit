@@ -477,63 +477,56 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
     
 
 class TurbulenceTextData:
-    """Manages time-space averaged data loading and access from .dat files"""
+    """Manages time-space averaged data loading and access from ASCII tables.
+
+    CHAPSim2 writes these either as one profile bundle per physics group
+    (``2_visu/data/domain1_tsp_avg_flow_yprofile_60.dat``) or, with the
+    per-field output layout, as one table per quantity in ``1_data/``.
+    ``utils.load_tsp_avg_profiles`` reads whichever is present, so both give
+    the same ``{quantity: profile}`` view here.
+    """
 
     def __init__(self, folder_path: str, cases: List[str], timesteps: List[str], thermo_on: bool):
         self.folder_path = folder_path
         self.cases = cases
         self.timesteps = timesteps
-        # Nested structure: {case_timestep: {quantity: array}}
+        # Nested structure: {case_timestep: {quantity: 1-D profile}}
         self.data: Dict[str, Dict[str, np.ndarray]] = {}
         self.y_coords: Optional[np.ndarray] = None
 
     def load_all(self) -> None:
-        """Load all time-space averaged .dat files found in each case directory."""
+        """Load all time-space averaged profiles found in each case directory."""
         for case in self.cases:
             for timestep in self.timesteps:
                 self._load_all_for_case_timestep(case, timestep)
 
     def _load_all_for_case_timestep(self, case: str, timestep: str) -> None:
-        """Discover and load every domain1_tsp_avg_*_{timestep}.dat file for a case."""
-        import glob
-        data_dir = os.path.join(ut.case_path(self.folder_path, case), '1_data')
-        pattern = os.path.join(data_dir, f'domain1_tsp_avg_*_{timestep}.dat')
-        files = sorted(glob.glob(pattern))
-        if not files:
-            print(f'No .dat files found for {case}, {timestep}')
+        """Load every tsp_avg profile a case offers for one timestep."""
+        case_dir = ut.case_path(self.folder_path, case)
+        variables, coords = ut.load_tsp_avg_profiles(case_dir, timestep)
+        if not variables:
+            print(f'No tsp_avg profile data found for {case}, {timestep}')
             return
+
         key = f"{case}_{timestep}"
-        if key not in self.data:
-            self.data[key] = {}
-        for file_path in files:
-            fname = os.path.basename(file_path)
-            # extract quantity from domain1_tsp_avg_{quantity}_{timestep}.dat
-            suffix = f'_{timestep}.dat'
-            prefix = 'domain1_tsp_avg_'
-            quantity = fname[len(prefix):-len(suffix)]
-            data = ut.load_ts_avg_data(file_path)
-            if data is not None:
-                self.data[key][quantity] = data
-                if self.y_coords is None and data.ndim == 2 and data.shape[1] >= 2:
-                    self.y_coords = data[:, 1]
-            else:
-                print(f'.dat file is empty for {case}, {timestep}, {quantity}')
+        self.data.setdefault(key, {}).update(variables)
+
+        if self.y_coords is None:
+            # Non-y profiles (duct/pipe cases averaged onto x or z) are still
+            # the wall-normal-like coordinate for downstream plotting.
+            direction = coords.get('direction', 'y')
+            self.y_coords = coords.get(f'{direction}c', coords.get('yc'))
+
+        print(f"Loaded {len(variables)} tsp_avg profiles for {case}, {timestep}")
 
     def get(self, case: str, quantity: str, timestep: str) -> Optional[np.ndarray]:
-        """Get specific data array (value column only)."""
-        key = f"{case}_{timestep}"
-        arr = self.data.get(key, {}).get(quantity)
-        if arr is None:
-            return None
-        return arr[:, 2]
+        """Get a specific profile."""
+        return self.data.get(f"{case}_{timestep}", {}).get(quantity)
 
     def get_raw_dict(self, case: str, timestep: str) -> Optional[Dict[str, np.ndarray]]:
         """Get the full data dictionary for a case/timestep (for TKE budget computation)."""
-        key = f"{case}_{timestep}"
-        raw = self.data.get(key, None)
-        if raw is None:
-            return None
-        return {name: arr[:, 2] for name, arr in raw.items()}
+        raw = self.data.get(f"{case}_{timestep}", None)
+        return dict(raw) if raw is not None else None
 
     def has(self, case: str, quantity: str, timestep: str) -> bool:
         """Check if data exists"""
@@ -605,16 +598,54 @@ class TurbulenceXDMFData:
         if self.average_over_timesteps:
             self.timesteps = ['avg']
 
+    def _load_tsp_avg_profiles(self, case: str, timestep: str, existing_files: List[str]) -> bool:
+        """Fall back to the ASCII tsp_avg profile table when there is no XDMF.
+
+        When two directions are periodic (the canonical channel), CHAPSim2
+        reduces its time-and-space averages all the way to a 1-D profile and
+        writes them as one ASCII table per physics group instead of an XDMF
+        plane. Without this the visu loader would come up empty for exactly
+        the cases whose statistics are cheapest to read.
+
+        Returns True when profiles were loaded and no XDMF read is needed.
+        """
+        wants_tsp_avg = any(str(d).startswith('tsp_avg') for d in (self.data_types or []))
+        if not wants_tsp_avg:
+            return False
+        if any('tsp_avg' in os.path.basename(f) for f in existing_files):
+            return False
+
+        case_dir = ut.case_path(self.folder_path, case)
+        variables, coords = ut.load_tsp_avg_profiles(case_dir, timestep)
+        if not variables:
+            return False
+
+        if self.required_vars is not None:
+            variables = {k: v for k, v in variables.items() if k in self.required_vars}
+
+        key = f"{case}_{timestep}"
+        self.data[key] = variables
+        direction = coords.get('direction', 'y')
+        if self.y_coords is None:
+            self.y_coords = coords.get(f'{direction}c', coords.get('yc'))
+        print(f"Loaded {len(variables)} tsp_avg profiles ({direction}-direction) "
+              f"for {case}, {timestep}")
+        return True
+
     def _load_single(self, case: str, timestep: str) -> None:
         """Load XDMF files for a single case and timestep"""
         key = f"{case}_{timestep}"
 
-        # Get file paths for this case/timestep — always the fixed 'zi1'
-        # spanwise-average tsp_avg naming (see utils.visu_file_paths).
+        # Every XDMF file this case offers for the timestep, across physics
+        # groups and averaging tiers (see utils.visu_file_paths); which of
+        # them get read is decided by self.data_types.
         file_names = ut.visu_file_paths(self.folder_path, case, timestep)
 
         # Check which files exist
         existing_files = [f for f in file_names if os.path.isfile(f)]
+
+        if self._load_tsp_avg_profiles(case, timestep, existing_files):
+            return
 
         if not existing_files:
             print(f'No .xdmf files found for {case}, {timestep}')
@@ -1905,10 +1936,10 @@ class SpectrumComputer:
             print("Spectral analysis: no y-coordinates specified; skipping.")
             return False
 
-        inst_xdmf = ut.visu_file_paths(self.folder_path, case, timestep)[0]
-        if not os.path.isfile(inst_xdmf):
+        inst_xdmf = ut.group_xdmf_paths(self.folder_path, case, timestep)['inst']
+        if inst_xdmf is None:
             print(f"Missing instantaneous flow file for spectral analysis: {case}, {timestep}\n"
-                  f"  Looked for: {inst_xdmf}")
+                  f"  Looked for: domain1_flow_{timestep}.xdmf")
             return False
 
         var_meta, grid_info = ut.parse_xdmf_metadata(inst_xdmf)
@@ -2151,11 +2182,11 @@ class TwoPointCorrelationComputer:
 
     def _correlate_snapshot(self, case: str, timestep: str):
         """Correlate one instantaneous snapshot; returns unnormalised results."""
-        file_paths = ut.visu_file_paths(self.folder_path, case, timestep)
-        inst_xdmf = file_paths[0]
-        if not os.path.isfile(inst_xdmf):
+        file_paths = ut.group_xdmf_paths(self.folder_path, case, timestep)
+        inst_xdmf = file_paths['inst']
+        if inst_xdmf is None:
             print(f"Missing instantaneous flow file for the two-point correlation: {case}, {timestep}\n"
-                  f"  Looked for: {inst_xdmf}")
+                  f"  Looked for: domain1_flow_{timestep}.xdmf")
             return None
 
         var_meta, grid_info = ut.parse_xdmf_metadata(inst_xdmf)
@@ -2270,9 +2301,10 @@ class TwoPointCorrelationComputer:
             return {}, {c: 'snapshot mean' for c in letters}
 
         means, sources = {}, {}
-        for xdmf, prefix in ((file_paths[2], 'tsp_avg_'), (file_paths[1], 't_avg_')):
+        for xdmf, prefix in ((file_paths['tsp_avg'], 'tsp_avg_'),
+                             (file_paths['t_avg'], 't_avg_')):
             wanted = {c: prefix + _TWO_POINT_CORR_VARS[c][1] for c in letters if c not in means}
-            if not wanted or not os.path.isfile(xdmf):
+            if not wanted or xdmf is None:
                 continue
             var_meta, grid_info = ut.parse_xdmf_metadata(xdmf)
             names = [name for name in wanted.values() if name in var_meta]

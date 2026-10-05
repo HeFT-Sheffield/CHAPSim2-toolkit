@@ -43,14 +43,8 @@ WALL_DISTANCE_FIELD = 'Wall-distance'
 # ---------------------------------------------------------------------------
 
 def get_available_timesteps(visu_folder):
-    """Extract available timesteps from XDMF filenames."""
-    timesteps = set()
-    for f in os.listdir(visu_folder):
-        if f.endswith('.xdmf'):
-            parts = f.replace('.xdmf', '').split('_')
-            if parts:
-                timesteps.add(parts[-1])
-    return sorted(timesteps)
+    """Extract available timesteps from XDMF filenames, sorted numerically."""
+    return ut.find_available_timesteps(visu_folder)
 
 
 def build_pyvista_grid(grid_info, data_dict, stride=1):
@@ -163,14 +157,13 @@ def get_user_input():
     case_folder = input("\nPath to case folder: ").strip() or os.getcwd()
     case_folder = os.path.expanduser(os.path.expandvars(case_folder))
 
-    if os.path.basename(case_folder) == '2_visu':
-        visu_folder = case_folder
-        case_folder = os.path.dirname(case_folder)
-    else:
-        visu_folder = os.path.join(case_folder, '2_visu')
+    # Accept the case folder, 2_visu, or 2_visu/xdmf — they all name one case.
+    dirs = ut.resolve_case_dirs(case_folder)
+    case_folder = dirs['case']
+    visu_folder = dirs['xdmf']
 
     if not os.path.isdir(visu_folder):
-        print(f"Error: {visu_folder} not found.")
+        print(f"Error: No CHAPSim2 visualisation output under {dirs['visu']}")
         return None
 
     timesteps = get_available_timesteps(visu_folder)

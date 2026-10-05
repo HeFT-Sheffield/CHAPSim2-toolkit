@@ -50,68 +50,79 @@ except ImportError:
 
 def load_xdmf_data(visu_folder, timestep, slice_label=None):
     """
-    Load all available XDMF data from the 2_visu folder.
-    Prioritises tsp_avg (time-space averaged) files, falls back to t_avg (time averaged) if not found.
-    Returns dictionary of all variables, grid info, and whether data is already space-averaged.
+    Load the averaged statistics a case offers for one timestep.
+
+    Sources are tried most-reduced first, since each needs less work
+    downstream than the last:
+
+      1. ASCII profile bundles (``2_visu/data/domain1_tsp_avg_flow_yprofile_
+         60.dat``) — already 1-D, written when two directions are periodic.
+      2. tsp_avg plane XDMF (``domain1_tsp_avg_flow_zi1_60.xdmf``) — 2-D,
+         averaged over the one periodic direction. The plane tag names that
+         direction, so it is discovered rather than assumed.
+      3. t_avg XDMF (``domain1_t_avg_flow_60.xdmf``) — full 3-D, averaged in
+         time only, so it still needs spatial averaging here.
 
     Args:
-        visu_folder: Path to the 2_visu folder
+        visu_folder: Path to the case's xdmf folder (or the case folder)
         timestep: Timestep string
         slice_label: Optional 2D slice label (e.g., 'yi8'). When set, loads
                      pre-sliced 2D data instead of full 3D fields.
+
+    Returns:
+        tuple ``(data, grid_info)``.
     """
-    # Build filename patterns, optionally including the slice label
-    if slice_label:
-        tsp_avg_patterns = [
-            f'domain1_tsp_avg_flow_{slice_label}_{timestep}.xdmf',
-            f'domain1_tsp_avg_thermo_{slice_label}_{timestep}.xdmf',
-            f'domain1_tsp_avg_mhd_{slice_label}_{timestep}.xdmf',
-        ]
-        t_avg_patterns = [
-            f'domain1_t_avg_flow_{slice_label}_{timestep}.xdmf',
-            f'domain1_t_avg_thermo_{slice_label}_{timestep}.xdmf',
-            f'domain1_t_avg_mhd_{slice_label}_{timestep}.xdmf',
-        ]
-    else:
-        tsp_avg_patterns = [
-            f'domain1_tsp_avg_flow_{timestep}.xdmf',
-            f'domain1_tsp_avg_thermo_{timestep}.xdmf',
-            f'domain1_tsp_avg_mhd_{timestep}.xdmf',
-        ]
-        t_avg_patterns = [
-            f'domain1_t_avg_flow_{timestep}.xdmf',
-            f'domain1_t_avg_thermo_{timestep}.xdmf',
-            f'domain1_t_avg_mhd_{timestep}.xdmf',
-        ]
+    dirs = ut.resolve_case_dirs(visu_folder)
+    xdmf_dir = dirs['xdmf']
 
-    # Check which tsp_avg files exist
-    tsp_avg_files = [(p, os.path.join(visu_folder, p)) for p in tsp_avg_patterns
-                     if os.path.isfile(os.path.join(visu_folder, p))]
+    # 1. ASCII profile bundles — only meaningful for whole-domain statistics.
+    if not slice_label:
+        variables, coords = ut.load_tsp_avg_profiles(dirs['case'], timestep,
+                                                     strip_prefix=False)
+        if variables:
+            print(f"Found time-and-space averaged profile table(s) — "
+                  f"{len(variables)} variables, already 1D")
+            direction = coords.get('direction', 'y')
+            grid_info = {}
+            coord = coords.get(f'{direction}c')
+            if coord is not None:
+                # Also expose it as grid_y: downstream this script treats the
+                # profile axis as wall-normal whichever direction it runs along.
+                grid_info[f'grid_{direction}'] = coord
+                grid_info['grid_y'] = coord
+            return variables, grid_info
 
-    is_space_averaged = False
-    if tsp_avg_files:
-        print("Found time-space averaged (tsp_avg) files - data is 1D, no spatial averaging needed")
-        file_patterns = tsp_avg_patterns
-        is_space_averaged = True
+    # 2/3. XDMF: build the candidate names for each tier.
+    def names(prefix):
+        if slice_label:
+            return [f'domain1_{prefix}_{g}_{slice_label}_{timestep}.xdmf'
+                    for g in ut.VISU_GROUPS]
+        found = []
+        for g in ut.VISU_GROUPS:
+            found.append(f'domain1_{prefix}_{g}_{timestep}.xdmf')
+            if prefix == 'tsp_avg':
+                # Plane output, tagged with the averaged-out direction.
+                found.extend(f'domain1_tsp_avg_{g}_{a}i1_{timestep}.xdmf' for a in 'xyz')
+        return found
+
+    tiers = [
+        ('tsp_avg', "time-and-space averaged (tsp_avg) planes — no further spatial averaging needed"),
+        ('t_avg', "time averaged (t_avg) fields — will spatially average"),
+    ]
+
+    existing_files = []
+    for prefix, message in tiers:
+        existing_files = [(n, os.path.join(xdmf_dir, n)) for n in names(prefix)
+                          if os.path.isfile(os.path.join(xdmf_dir, n))]
+        if existing_files:
+            print(f"Using {message}")
+            break
     else:
-        # Fall back to t_avg files
-        t_avg_files = [(p, os.path.join(visu_folder, p)) for p in t_avg_patterns
-                       if os.path.isfile(os.path.join(visu_folder, p))]
-        if t_avg_files:
-            print("No tsp_avg files found, using time averaged (t_avg) files - will spatially average")
-            file_patterns = t_avg_patterns
-        else:
-            print("Warning: No averaged data files found (tsp_avg or t_avg)")
-            file_patterns = []
+        print("Warning: No averaged data files found (tsp_avg or t_avg)")
 
     all_data = {}
     grid_info = {}
 
-    # Find which files exist
-    existing_files = [(p, os.path.join(visu_folder, p)) for p in file_patterns
-                      if os.path.isfile(os.path.join(visu_folder, p))]
-
-    # Use utils.py's parse_xdmf_file for each file
     with tqdm(total=len(existing_files), desc="Loading XDMF files", unit="file") as pbar:
         for pattern, filepath in existing_files:
             pbar.set_postfix_str(pattern[:30])
@@ -408,28 +419,18 @@ def get_user_input():
         case_folder = os.getcwd()
     case_folder = os.path.expanduser(os.path.expandvars(case_folder))
 
-    # Handle case where user navigated to 2_visu folder
-    if os.path.basename(case_folder) == '2_visu':
-        visu_folder = case_folder
-        case_folder = os.path.dirname(case_folder)
-    else:
-        visu_folder = os.path.join(case_folder, '2_visu')
+    # Accept the case folder, 2_visu, or 2_visu/xdmf — they all name one case.
+    dirs = ut.resolve_case_dirs(case_folder)
+    case_folder = dirs['case']
+    visu_folder = dirs['xdmf']
 
     if not os.path.isdir(visu_folder):
-        print(f"Error: Directory not found: {visu_folder}")
+        print(f"Error: No CHAPSim2 visualisation output under {dirs['visu']}")
         return None
 
-    # List available timesteps
-    xdmf_files = [f for f in os.listdir(visu_folder) if f.endswith('.xdmf')]
-    timesteps = set()
-    for f in xdmf_files:
-        # Extract timestep from filename (e.g., domain1_tsp_avg_flow_100000.xdmf)
-        parts = f.replace('.xdmf', '').split('_')
-        if parts:
-            timesteps.add(parts[-1])
-
+    timesteps = ut.find_available_timesteps(visu_folder)
     if timesteps:
-        print(f"\nAvailable timesteps: {sorted(timesteps)}")
+        print(f"\nAvailable timesteps: {timesteps}")
 
     timestep = input("Timestep: ").strip()
 

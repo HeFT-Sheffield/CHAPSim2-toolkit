@@ -26,8 +26,7 @@ def read_domain(xdmf_path):
         arrays: dict of {var_name: np.ndarray} with shape (nz, ny, nx)
         grid_info: dict with 'grid_x', 'grid_y', 'grid_z', 'node_dimensions', etc.
     """
-    arrays, grid_info = parse_xdmf_file(xdmf_path, load_all_vars=True, output_dim=3)
-    return arrays, grid_info
+    return parse_xdmf_file(xdmf_path, load_all_vars=True)
 
 
 def write_grid_binary(filepath, data):
@@ -176,16 +175,18 @@ def stitch_domains(xdmf_path_1, xdmf_path_2, output_dir, output_prefix='stitched
     print(f"Combined node dimensions: {node_dims}")
     print(f"Combined cell dimensions: {cell_dims}")
 
-    # --- Create output directories ---
-    data_dir = os.path.join(output_dir, '1_data')
+    # --- Create output directories (CHAPSim2's 2_visu/{xdmf,data,mesh}) ---
     visu_dir = os.path.join(output_dir, '2_visu')
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(visu_dir, exist_ok=True)
+    xdmf_dir = os.path.join(visu_dir, 'xdmf')
+    data_dir = os.path.join(visu_dir, 'data')
+    mesh_dir = os.path.join(visu_dir, 'mesh')
+    for directory in (visu_dir, xdmf_dir, data_dir, mesh_dir):
+        os.makedirs(directory, exist_ok=True)
 
     # --- Write grid binary files (with 4-byte element count header) ---
-    write_grid_binary(os.path.join(data_dir, f'{output_prefix}_grid_x.bin'), x_combined)
-    write_grid_binary(os.path.join(data_dir, f'{output_prefix}_grid_y.bin'), y1)
-    write_grid_binary(os.path.join(data_dir, f'{output_prefix}_grid_z.bin'), z1)
+    write_grid_binary(os.path.join(mesh_dir, f'{output_prefix}_grid_x.bin'), x_combined)
+    write_grid_binary(os.path.join(mesh_dir, f'{output_prefix}_grid_y.bin'), y1)
+    write_grid_binary(os.path.join(mesh_dir, f'{output_prefix}_grid_z.bin'), z1)
     print("Wrote grid files")
 
     # --- Stitch and write flow field arrays ---
@@ -219,7 +220,7 @@ def stitch_domains(xdmf_path_1, xdmf_path_2, output_dir, output_prefix='stitched
         # Write raw binary (no header), matching decomp_2d_write_one format
         bin_filename = f'{output_prefix}_{var_name}.bin'
         write_field_binary(os.path.join(data_dir, bin_filename), combined)
-        attributes.append((var_name, f'../1_data/{bin_filename}'))
+        attributes.append((var_name, f'../data/{bin_filename}'))
         print(f"  {var_name}: {a1.shape} + {a2.shape} -> {combined.shape}")
 
     # --- Write XDMF file ---
@@ -244,9 +245,9 @@ def stitch_domains(xdmf_path_1, xdmf_path_2, output_dir, output_prefix='stitched
         timestep = ''
 
     grid_files = {
-        'x': f'../1_data/{output_prefix}_grid_x.bin',
-        'y': f'../1_data/{output_prefix}_grid_y.bin',
-        'z': f'../1_data/{output_prefix}_grid_z.bin',
+        'x': f'../mesh/{output_prefix}_grid_x.bin',
+        'y': f'../mesh/{output_prefix}_grid_y.bin',
+        'z': f'../mesh/{output_prefix}_grid_z.bin',
     }
 
     if timestep:
@@ -254,7 +255,7 @@ def stitch_domains(xdmf_path_1, xdmf_path_2, output_dir, output_prefix='stitched
     else:
         xdmf_filename = f'{output_prefix}_{grid_name}.xdmf'
 
-    xdmf_path = os.path.join(visu_dir, xdmf_filename)
+    xdmf_path = os.path.join(xdmf_dir, xdmf_filename)
     generate_xdmf(grid_name, node_dims, cell_dims, grid_files, attributes, xdmf_path)
 
     print(f"\nDone! Stitched domain written to: {output_dir}")
@@ -272,8 +273,8 @@ if __name__ == '__main__':
 
     # Paths to the two domain XDMF files to stitch
     # These should be the same type (e.g. both 'flow', both 'tsp_avg_flow', etc.)
-    XDMF_DOMAIN_1 = '/path/to/case1/2_visu/domain1_flow_680000.xdmf'
-    XDMF_DOMAIN_2 = '/path/to/case2/2_visu/domain1_flow_680000.xdmf'
+    XDMF_DOMAIN_1 = '/path/to/case1/2_visu/xdmf/domain1_flow_680000.xdmf'
+    XDMF_DOMAIN_2 = '/path/to/case2/2_visu/xdmf/domain1_flow_680000.xdmf'
 
     # Output directory for the stitched domain
     OUTPUT_DIR = '/path/to/output/stitched_case'

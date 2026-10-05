@@ -45,14 +45,8 @@ except ImportError:
 
 
 def get_available_timesteps(visu_folder):
-    """Extract available timesteps from XDMF filenames."""
-    xdmf_files = [f for f in os.listdir(visu_folder) if f.endswith('.xdmf')]
-    timesteps = set()
-    for f in xdmf_files:
-        parts = f.replace('.xdmf', '').split('_')
-        if parts:
-            timesteps.add(parts[-1])
-    return sorted(timesteps)
+    """Extract available timesteps from XDMF filenames, sorted numerically."""
+    return ut.find_available_timesteps(visu_folder)
 
 
 def get_available_variables(data):
@@ -83,32 +77,31 @@ def extract_slice(data_3d, plane, index, grid_info):
         if index >= nz:
             index = nz - 1
         slice_data = data_3d[index, :, :]
-        coord1 = grid_info.get('grid_x', np.arange(nx))
-        coord2 = grid_info.get('grid_y', np.arange(ny))
-        axis_labels = ('$x$', '$y$')
+        axes = ('x', 'y')
 
     elif plane == 'xz':
         # Slice at constant y
         if index >= ny:
             index = ny - 1
         slice_data = data_3d[:, index, :]
-        coord1 = grid_info.get('grid_x', np.arange(nx))
-        coord2 = grid_info.get('grid_z', np.arange(nz))
-        axis_labels = ('$x$', '$z$')
+        axes = ('x', 'z')
 
     elif plane == 'yz':
         # Slice at constant x
         if index >= nx:
             index = nx - 1
         slice_data = data_3d[:, :, index]
-        coord1 = grid_info.get('grid_y', np.arange(ny))
-        coord2 = grid_info.get('grid_z', np.arange(nz))
-        axis_labels = ('$y$', '$z$')
+        axes = ('y', 'z')
 
     else:
         raise ValueError(f"Invalid plane '{plane}'. Use 'xy', 'xz', or 'yz'.")
 
-    return slice_data, coord1, coord2, axis_labels
+    # Cylindrical cases are rectilinear in (x, r, theta), so label them that way.
+    labels = ut.axis_labels(grid_info.get('coordinate_system'))
+    fallback = {'x': np.arange(nx), 'y': np.arange(ny), 'z': np.arange(nz)}
+    coord1, coord2 = (grid_info.get(f'grid_{a}', fallback[a]) for a in axes)
+
+    return slice_data, coord1, coord2, (labels[axes[0]], labels[axes[1]])
 
 
 def infer_data_location(data_shape, grid_info):
@@ -185,7 +178,12 @@ def apply_fluctuation(data, variables, grid_info, t_avg_xdmf):
         print(f"  Warning: t_avg file not found: {t_avg_xdmf}. Skipping fluctuation.")
         return list(variables)
 
-    t_avg_meta, _ = ut.parse_xdmf_metadata(t_avg_xdmf)
+    # Match the slice the instantaneous data came from, so a t_avg slice
+    # bundle yields the same plane rather than its first one.
+    t_avg_meta, _ = ut.parse_xdmf_metadata(
+        t_avg_xdmf, grid_select=(grid_info or {}).get('grid_tag'))
+
+    wanted = {}
     result = []
     for var in variables:
         t_avg_var = op.INST_TO_TAVG_VAR.get(var)
@@ -193,10 +191,22 @@ def apply_fluctuation(data, variables, grid_info, t_avg_xdmf):
             print(f"  Warning: no t_avg counterpart for '{var}'; using instantaneous field.")
             result.append(var)
             continue
-        t_avg_loaded = ut.load_xdmf_variables(t_avg_meta, [t_avg_var], grid_info=grid_info)
-        fluc_name = f"{var}'"
-        data[fluc_name] = op.compute_inst_fluc(data[var], t_avg_loaded[t_avg_var])
-        result.append(fluc_name)
+        wanted[var] = t_avg_var
+        result.append(f"{var}'")
+
+    if wanted:
+        # One batched read: the t_avg fields all live in the same bundle file.
+        loaded = ut.load_xdmf_variables(t_avg_meta, list(dict.fromkeys(wanted.values())),
+                                        grid_info=grid_info, quiet=True)
+        for var, t_avg_var in wanted.items():
+            mean = loaded.get(t_avg_var)
+            if mean is None:
+                print(f"  Warning: could not read t_avg {t_avg_var}; "
+                      f"using instantaneous '{var}'.")
+                result[result.index(f"{var}'")] = var
+                continue
+            data[f"{var}'"] = op.compute_inst_fluc(data[var], mean)
+
     return result
 
 
@@ -440,9 +450,10 @@ def default_t_avg_path(config):
     """Guess the path to the matching t_avg XDMF file for the given inst config.
 
     Follows the same filename convention as get_user_input(): a plain
-    domain1_t_avg_{physics}_{timestep}.xdmf for full 3D data, or
-    domain1_t_avg_{physics}_{slice_label}_{timestep}.xdmf for a 2D slice.
-    Returns None if the required fields are missing or the file doesn't exist.
+    domain1_t_avg_{physics}_{timestep}.xdmf for full 3D data, or — for a 2D
+    slice — domain1_t_avg_{physics}_{slice_label}_{timestep}.xdmf, falling
+    back to the per-timestep slice bundle.
+    Returns None if the required fields are missing or no file exists.
     """
     visu_folder = config.get('visu_folder')
     physics_type = config.get('physics_type')
@@ -450,16 +461,21 @@ def default_t_avg_path(config):
     if not (visu_folder and physics_type and timestep):
         return None
 
+    prefix = f"domain1_t_avg_{physics_type}"
     if config.get('is_2d_slice'):
         slice_label = config.get('slice_label')
         if not slice_label:
             return None
-        name = f"domain1_t_avg_{physics_type}_{slice_label}_{timestep}.xdmf"
+        names = [f"{prefix}_{slice_label}_{timestep}.xdmf",
+                 f"{prefix}_slices_visu_{timestep}.xdmf"]
     else:
-        name = f"domain1_t_avg_{physics_type}_{timestep}.xdmf"
+        names = [f"{prefix}_{timestep}.xdmf"]
 
-    path = os.path.join(visu_folder, name)
-    return path if os.path.isfile(path) else None
+    for name in names:
+        path = os.path.join(visu_folder, name)
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
@@ -783,15 +799,13 @@ def get_user_input():
         case_folder = os.getcwd()
     case_folder = os.path.expanduser(os.path.expandvars(case_folder))
 
-    # Handle case where user navigated to 2_visu folder
-    if os.path.basename(case_folder) == '2_visu':
-        visu_folder = case_folder
-        case_folder = os.path.dirname(case_folder)
-    else:
-        visu_folder = os.path.join(case_folder, '2_visu')
+    # Accept the case folder, 2_visu, or 2_visu/xdmf — they all name one case.
+    dirs = ut.resolve_case_dirs(case_folder)
+    case_folder = dirs['case']
+    visu_folder = dirs['xdmf']
 
     if not os.path.isdir(visu_folder):
-        print(f"Error: Directory not found: {visu_folder}")
+        print(f"Error: No CHAPSim2 visualisation output under {dirs['visu']}")
         return None
 
     # List available timesteps
@@ -866,26 +880,38 @@ def get_user_input():
                    '': 'flow'}
     physics_type = physics_map.get(physics_choice, 'flow')
 
-    # Build filename based on data type
-    if is_2d_slice:
-        if data_type == 'inst':
-            xdmf_filename = f"domain1_{physics_type}_{slice_label}_{timestep}.xdmf"
-        else:
-            xdmf_filename = f"domain1_{data_type}_{physics_type}_{slice_label}_{timestep}.xdmf"
-    else:
-        if data_type == 'inst':
-            xdmf_filename = f"domain1_{physics_type}_{timestep}.xdmf"
-        else:
-            xdmf_filename = f"domain1_{data_type}_{physics_type}_{timestep}.xdmf"
+    # Build the candidate filenames for this selection. CHAPSim2 can write a
+    # slice either as its own file or packed into a per-timestep bundle, a
+    # grid collection holding every slice; grid_select picks one out of it.
+    prefix = f"domain1_{physics_type}" if data_type == 'inst' \
+        else f"domain1_{data_type}_{physics_type}"
+    grid_select = None
 
-    xdmf_path = os.path.join(visu_folder, xdmf_filename)
-    if not os.path.isfile(xdmf_path):
-        print(f"Error: File not found: {xdmf_filename}")
+    if is_2d_slice:
+        candidates = [
+            (f"{prefix}_{slice_label}_{timestep}.xdmf", None),
+            (f"{prefix}_slices_visu_{timestep}.xdmf", slice_label),
+        ]
+    else:
+        candidates = [(f"{prefix}_{timestep}.xdmf", None)]
+
+    xdmf_path = None
+    for filename, select in candidates:
+        path = os.path.join(visu_folder, filename)
+        if os.path.isfile(path):
+            xdmf_path, grid_select = path, select
+            break
+
+    if xdmf_path is None:
+        print(f"Error: File not found: {candidates[0][0]}")
         print("\nAvailable files:")
         for f in sorted(os.listdir(visu_folder)):
             if f.endswith('.xdmf'):
                 print(f"  {f}")
         return None
+
+    if grid_select:
+        print(f"  -> Reading slice '{grid_select}' from bundle {os.path.basename(xdmf_path)}")
 
     return {
         'case_folder': case_folder,
@@ -894,6 +920,7 @@ def get_user_input():
         'data_type': data_type,
         'physics_type': physics_type,
         'xdmf_path': xdmf_path,
+        'grid_select': grid_select,
         'is_2d_slice': is_2d_slice,
         'slice_label': slice_label,
     }
@@ -986,7 +1013,7 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label, default_t_avg_xdmf=
             print(f"  Warning: t_avg file not found: {t_avg_xdmf}")
 
     # Get slice axis info
-    axis_info = ut.slice_axis_info(slice_label)
+    axis_info = ut.slice_axis_info(slice_label, grid_info.get('coordinate_system'))
 
     # X-direction cropping (optional, for xz and xy planes)
     x_crop = None
@@ -1292,7 +1319,8 @@ def main():
     print("=" * 60)
 
     # Step 1: Parse XDMF metadata (variable names, shapes, grid coords only)
-    var_metadata, grid_info = ut.parse_xdmf_metadata(config['xdmf_path'])
+    var_metadata, grid_info = ut.parse_xdmf_metadata(
+        config['xdmf_path'], grid_select=config.get('grid_select'))
 
     if not var_metadata:
         print("Error: No variables found in XDMF file. Check file path and format.")
@@ -1355,7 +1383,7 @@ def main():
 
     if is_2d_slice:
         # Data is already 2D — determine axis info from slice label
-        axis_info = ut.slice_axis_info(slice_label)
+        axis_info = ut.slice_axis_info(slice_label, grid_info.get('coordinate_system'))
         axis_labels = axis_info['axis_labels'] if axis_info else ('$x$', '$y$')
         coord1_key, coord2_key = axis_info['coord_keys'] if axis_info else ('grid_x', 'grid_y')
         slice_info = f"({axis_info['normal_dir']} index = {axis_info['normal_index']})" if axis_info else ""
@@ -1556,7 +1584,7 @@ def main():
             )
 
             if is_2d_slice:
-                axis_info = ut.slice_axis_info(slice_label)
+                axis_info = ut.slice_axis_info(slice_label, grid_info.get('coordinate_system'))
                 axis_labels = axis_info['axis_labels'] if axis_info else ('$x$', '$y$')
                 coord1_key, coord2_key = axis_info['coord_keys'] if axis_info else ('grid_x', 'grid_y')
                 slice_info = f"({axis_info['normal_dir']} index = {axis_info['normal_index']})" if axis_info else ""

@@ -1299,52 +1299,64 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
             self._scan()
 
     def _visu_folder(self):
-        base = self._case_path.get().rstrip('/')
-        candidate = os.path.join(base, '2_visu')
-        if os.path.isdir(candidate):
-            return candidate
-        return base
+        from utils import resolve_case_dirs
+        return resolve_case_dirs(self._case_path.get())['xdmf']
 
     def _xdmf_path(self):
+        """Path of the XDMF file for the current selection.
+
+        Also returned via _xdmf_target() together with the grid to pick out of
+        it, since a slice may live in its own file or in a per-timestep slice
+        bundle (a grid collection holding every slice).
+        """
+        return self._xdmf_target()[0]
+
+    def _xdmf_target(self):
         visu = self._visu_folder()
         ts = self._ts.get()
         dtype = self._dtype.get()
         phys = self._phys.get()
         sl = self._slice_lbl.get().strip()
-        if dtype == 'inst':
-            # Instantaneous files have no 'inst' prefix: domain1_{phys}_{ts}.xdmf
-            if sl:
-                name = f'domain1_{phys}_{sl}_{ts}.xdmf'
-            else:
-                name = f'domain1_{phys}_{ts}.xdmf'
-        elif dtype == '2d_slice':
-            # 2D slice: domain1_{phys}_{slice_label}_{ts}.xdmf
-            name = f'domain1_{phys}_{sl}_{ts}.xdmf' if sl else f'domain1_{phys}_{ts}.xdmf'
+        # Instantaneous files carry no 'inst' prefix: domain1_{phys}_{ts}.xdmf
+        prefix = f'domain1_{phys}' if dtype in ('inst', '2d_slice') else f'domain1_{dtype}_{phys}'
+
+        if sl:
+            candidates = [(f'{prefix}_{sl}_{ts}.xdmf', None),
+                          (f'{prefix}_slices_visu_{ts}.xdmf', sl)]
         else:
-            # t_avg / tsp_avg: domain1_{dtype}_{phys}_{ts}.xdmf
-            name = f'domain1_{dtype}_{phys}_{ts}.xdmf'
-        path = os.path.join(visu, name)
-        if not os.path.exists(path):
-            # Fallback: glob for any matching file
-            pattern = (f'domain1_{phys}_{ts}*.xdmf' if dtype == 'inst'
-                       else f'domain1_{dtype}_{phys}_{ts}*.xdmf')
-            matches = glob.glob(os.path.join(visu, pattern))
-            if matches:
-                return matches[0]
-        return path
+            candidates = [(f'{prefix}_{ts}.xdmf', None)]
+            if dtype == 'tsp_avg':
+                # Space-averaged output is a plane tagged with the direction
+                # that was averaged away (zi1 for a spanwise-periodic channel).
+                candidates += [(f'{prefix}_{a}i1_{ts}.xdmf', None) for a in 'xyz']
+
+        for name, select in candidates:
+            path = os.path.join(visu, name)
+            if os.path.exists(path):
+                return path, select
+
+        # Fallback: any file for this prefix and timestep, whatever sits between.
+        matches = sorted(glob.glob(os.path.join(visu, f'{prefix}_*{ts}.xdmf'))
+                         or glob.glob(os.path.join(visu, f'{prefix}_{ts}*.xdmf')))
+        if matches:
+            return matches[0], None
+        return os.path.join(visu, candidates[0][0]), None
 
     def _default_t_avg_path(self):
         visu = self._visu_folder()
         ts = self._ts.get()
         phys = self._phys.get()
         sl = self._slice_lbl.get().strip()
-        # Mirrors _xdmf_path(): a slice label produces a slice-tagged filename
-        # for both 'inst' and '2d_slice' dtypes.
-        if sl:
-            name = f'domain1_t_avg_{phys}_{sl}_{ts}.xdmf'
-        else:
-            name = f'domain1_t_avg_{phys}_{ts}.xdmf'
-        return os.path.join(visu, name)
+        # Mirrors _xdmf_target(): a slice label produces a slice-tagged
+        # filename, falling back to the timestep's slice bundle.
+        names = [f'domain1_t_avg_{phys}_{sl}_{ts}.xdmf',
+                 f'domain1_t_avg_{phys}_slices_visu_{ts}.xdmf'] if sl \
+            else [f'domain1_t_avg_{phys}_{ts}.xdmf']
+        for name in names:
+            path = os.path.join(visu, name)
+            if os.path.isfile(path):
+                return path
+        return os.path.join(visu, names[0])
 
     def _on_fluc_toggle(self):
         if self._use_fluc.get() and not self._t_avg_path.get().strip():
@@ -1369,11 +1381,13 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
             self._log(f'Scan error: {exc}')
 
     def _load_vars(self):
-        xdmf = self._xdmf_path()
-        self._log(f'Reading metadata: {xdmf}')
+        xdmf, grid_select = self._xdmf_target()
+        self._log(f'Reading metadata: {xdmf}'
+                  + (f" (slice {grid_select})" if grid_select else ''))
         try:
             from utils import parse_xdmf_metadata
-            self._var_meta, self._grid_info = parse_xdmf_metadata(xdmf)
+            self._var_meta, self._grid_info = parse_xdmf_metadata(
+                xdmf, grid_select=grid_select)
             names = sorted(self._var_meta.keys())
             self._var_lb.delete(0, tk.END)
             for n in names:
@@ -1426,14 +1440,14 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
                 use_vort = self._use_vort.get()
                 load_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(sel)) if use_vort else sel
 
-                xdmf = self._xdmf_path()
-                var_meta, grid = parse_xdmf_metadata(xdmf)
+                xdmf, grid_select = self._xdmf_target()
+                var_meta, grid = parse_xdmf_metadata(xdmf, grid_select=grid_select)
 
                 # Re-load only when the dataset identity changes. `data` is a
                 # shallow copy so the derived fields that apply_vorticity /
                 # apply_fluctuation write back cannot leak into the retained
                 # base across runs.
-                key = (xdmf, tuple(sorted(load_vars)))
+                key = (xdmf, grid_select, tuple(sorted(load_vars)))
                 if self._data is not None and key == self._data_key:
                     self._log('Reusing loaded data (dataset unchanged).')
                     data = dict(self._data)
@@ -1473,7 +1487,8 @@ class SliceTab(ConsoleConsumer, ttk.Frame):
                 is_2d = sample.ndim <= 2
 
                 if is_2d:
-                    axis_info = slice_axis_info(self._slice_lbl.get().strip())
+                    axis_info = slice_axis_info(self._slice_lbl.get().strip(),
+                                                grid.get('coordinate_system'))
                     if axis_info:
                         c1_key, c2_key = axis_info['coord_keys']
                         axis_labels = axis_info['axis_labels']
@@ -2254,9 +2269,8 @@ class TurbVisuTab(ConsoleConsumer, ttk.Frame):
             self._screenshot_path.set(p)
 
     def _visu_folder(self):
-        base = self._case_path.get().rstrip('/')
-        candidate = os.path.join(base, '2_visu')
-        return candidate if os.path.isdir(candidate) else base
+        from utils import resolve_case_dirs
+        return resolve_case_dirs(self._case_path.get())['xdmf']
 
     def _xdmf_path(self):
         visu = self._visu_folder()
@@ -2645,9 +2659,14 @@ class MeshAnalysisTab(ttk.Frame):
     # Label -> value for the readonly combos
     CASES = {'channel': ma.ICASE_CHANNEL, 'pipe': ma.ICASE_PIPE,
              'annular': ma.ICASE_ANNULAR}
-    ISTRETS = {'uniform': ma.ISTRET_NO, 'two-side clustered': ma.ISTRET_2SIDES,
+    # Full solver enums (parse_istret / parse_rstret in input_general.f90):
+    # a value the combo cannot represent would be reset the next time the
+    # controls are read back, silently changing a loaded mesh.
+    ISTRETS = {'uniform': ma.ISTRET_NO, 'centre clustered': ma.ISTRET_CENTRE,
+               'two-side clustered': ma.ISTRET_2SIDES,
                'bottom clustered': ma.ISTRET_BOTTOM, 'top clustered': ma.ISTRET_TOP}
-    MSTRETS = {'3fmd': ma.MSTRET_3FMD, 'tanh': ma.MSTRET_TANH, 'power law': ma.MSTRET_POWL}
+    MSTRETS = {'uniform': ma.MSTRET_NONE, '3fmd': ma.MSTRET_3FMD,
+               'tanh': ma.MSTRET_TANH, 'power law': ma.MSTRET_POWL}
     FLUIDS = {name: idx for idx, name in ma.FLUID_NAMES.items()}
 
     def __init__(self, parent):
