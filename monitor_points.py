@@ -4,6 +4,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import sys
 import os
+import re
 
 mpl.rcParams.update({
 "font.family": "serif",
@@ -148,37 +149,125 @@ def plot_with_avg(ax, time, data, label, color, window):
                 rasterized=True)
 
 
-def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE, sample=1, usecols=None):
-    """
-    Load monitor data and drop diverged/invalid rows.
-    Sample > 1 skips rows during parsing.
+# ====================================================================================================================================================
+# Monitor file headers
+# ====================================================================================================================================================
+#
+# CHAPSim2 monitor files are self-describing, each in its own way:
+#
+#   domain1_monitor_pt<N>_flow.dat    # iteration, t, u, v, w, p, phi, T
+#   domain1_monitor_metrics_history.log
+#                                     # column  1 : time
+#                                     # column  2 : global mass balance ...
+#   domain1_monitor_change_history.log
+#                                     # columns: time; physical mass residual
+#                                     #          at bulk, inlet, outlet; ...
+#
+# The first two name their columns machine-readably, so they are parsed.  The
+# change history writes prose that does not map one-to-one onto columns, so it
+# uses the layout below — guarded by a column count check, falling back to
+# positional names if a future release changes it.
 
-    Some monitor files gain an extra leading 'iterations' column partway
-    through a run. The columns we actually want are always the last N
-    fields of each row, so selecting them with negative `usecols` handles
-    both the old and new layouts without caring how many columns precede
-    them (np.loadtxt resolves negative indices per row, so a mix of 7- and
-    8-column rows in the same file is fine).
+CHANGE_HISTORY_COLUMNS = [
+    'time',
+    'mass residual (bulk)', 'mass residual (inlet)', 'mass residual (outlet)',
+    'projected mass residual (bulk)', 'projected mass residual (inlet)',
+    'projected mass residual (outlet)',
+    'global mass flux imbalance',
+    'Poisson compatibility defect',
+    'uniform Poisson-source correction',
+    'Poisson projected-source amplitude',
+    'Poisson zero-mode projection',
+    'total mass', 'total mass drift', 'kinetic energy change rate',
+]
+
+COLUMN_RE = re.compile(r'^column\s+(\d+)\s*:\s*(.+)$')
+
+
+def read_monitor_header(file_path):
+    """Read the column names out of a monitor file's comment header.
+
+    Returns:
+        list of column names, or None when the header does not name them.
     """
+    comments = []
     try:
         with open(file_path, 'r') as f:
-            for _ in range(skiprows):
-                f.readline()
-            lines = f if sample <= 1 else (
-                line for i, line in enumerate(f) if i % sample == 0
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if not stripped.startswith('#'):
+                    break
+                comments.append(stripped.lstrip('#').strip())
+    except OSError:
+        return None
+
+    # 'column  N : name' records, one per line (metrics history).
+    numbered = {}
+    for entry in comments:
+        match = COLUMN_RE.match(entry)
+        if match:
+            numbered[int(match.group(1))] = match.group(2).strip()
+    if numbered:
+        return [numbered[i] for i in sorted(numbered)]
+
+    # A single comma-separated list on the last comment line (point monitors).
+    if comments and ',' in comments[-1]:
+        names = [n.strip() for n in comments[-1].split(',') if n.strip()]
+        if len(names) > 1:
+            return names
+
+    return None
+
+
+def load_monitor_data(file_path, max_abs_value=MAX_ABS_VALUE, sample=1):
+    """
+    Load a monitor file and drop diverged/invalid rows.
+
+    All leading comment lines are skipped, and columns are named from the
+    file's own header where it provides them, so a monitor file that gains a
+    column (CHAPSim2 has done this more than once) still plots the right
+    quantity under the right label.  Sample > 1 skips rows during parsing.
+
+    Returns:
+        tuple ``(data, columns)``: a 2-D array and the matching column names.
+        ``(empty array, [])`` when nothing could be read.
+    """
+    columns = read_monitor_header(file_path)
+
+    try:
+        with open(file_path, 'r') as f:
+            rows = (line for line in f if not line.lstrip().startswith('#'))
+            lines = rows if sample <= 1 else (
+                line for i, line in enumerate(rows) if i % sample == 0
             )
-            data = np.loadtxt(lines, dtype=np.float64, usecols=usecols)
+            data = np.loadtxt(lines, dtype=np.float64, ndmin=2)
     except Exception as e:
         print(f"Warning: Could not load {os.path.basename(file_path)}: {e}")
-        return np.empty((0, 0))
+        return np.empty((0, 0)), []
 
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
     if data.size == 0:
-        return np.empty((0, 0))
+        return np.empty((0, 0)), []
+
+    ncol = data.shape[1]
+    if columns is None:
+        name = os.path.basename(file_path)
+        if 'change_history' in name and ncol == len(CHANGE_HISTORY_COLUMNS):
+            columns = list(CHANGE_HISTORY_COLUMNS)
+        else:
+            columns = ['time'] + [f'column {i + 1}' for i in range(1, ncol)]
+    elif len(columns) != ncol:
+        print(f"Note: {os.path.basename(file_path)} header names {len(columns)} columns "
+              f"but the table has {ncol}; using the last {min(len(columns), ncol)}.")
+        if len(columns) > ncol:
+            # An older run may lack trailing columns (e.g. no thermo fields).
+            columns = columns[:ncol]
+        else:
+            columns = ([f'column {i + 1}' for i in range(ncol - len(columns))] + columns)
 
     finite_mask = np.all(np.isfinite(data), axis=1)
-    if data.shape[1] > 1:
+    if ncol > 1:
         within_limit = np.all(np.abs(data[:, 1:]) <= max_abs_value, axis=1)
     else:
         within_limit = np.ones(data.shape[0], dtype=bool)
@@ -191,22 +280,92 @@ def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE, sample=1
             f"(non-time |value| > {max_abs_value:.0e} or non-finite)."
         )
 
-    return data[keep_mask]
+    return data[keep_mask], columns
+
+
+def column_lookup(columns):
+    """Map normalised column names to their index."""
+    return {name.strip().lower(): i for i, name in enumerate(columns)}
+
+
+def pick(data, lookup, *candidates):
+    """Return the first column matching any candidate name, else None.
+
+    Candidates are matched case-insensitively, first exactly and then as a
+    substring, so 'bulk velocity qx' is found by 'qx' as well.
+    """
+    for candidate in candidates:
+        key = candidate.strip().lower()
+        if key in lookup:
+            return data[:, lookup[key]]
+    for candidate in candidates:
+        key = candidate.strip().lower()
+        # Only distinctive names are matched loosely: a bare 'u' or 'p' would
+        # otherwise hit 'bulk velocity qx' or 'total mass drift'.
+        if len(key) < 3:
+            continue
+        for name, index in lookup.items():
+            if key in name:
+                return data[:, index]
+    return None
+
+
+def plot_panels(panels, time, title, out_path, display, auto_ylim, avg_window):
+    """Render one figure with a stacked panel per entry.
+
+    ``panels`` is a list of ``(ylabel, [(label, series), ...])``; entries whose
+    series are all missing are dropped, so a case without thermo or without an
+    inlet simply gets a shorter figure.
+    """
+    panels = [(ylabel, [(lab, s) for lab, s in series if s is not None])
+              for ylabel, series in panels]
+    panels = [p for p in panels if p[1]]
+    if not panels:
+        print(f"  No plottable columns for {title}")
+        return
+
+    fig, axes = plt.subplots(len(panels), 1, figsize=(10, 3 * len(panels)),
+                             sharex=True, squeeze=False)
+    axes = axes[:, 0]
+
+    for ax, (ylabel, series) in zip(axes, panels):
+        for i, (label, values) in enumerate(series):
+            plot_with_avg(ax, time, values, label, f'C{i}', avg_window)
+        ax.set_ylabel(ylabel)
+        ax.legend()
+        ax.grid()
+        combined = np.concatenate([v for _, v in series])
+        if auto_ylim:
+            apply_robust_ylim(ax, combined)
+        add_stats_box(ax, series[0][1])
+
+    axes[-1].set_xlabel('Time')
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches='tight')
+    if display:
+        plt.show()
+    plt.close(fig)
+    print(f'Saved {os.path.basename(out_path)}')
 
 
 # ====================================================================================================================================================
 # Input parameters
 # ====================================================================================================================================================
 
-# Parse command line arguments for data path
-if len(sys.argv) > 1:
-    path = sys.argv[1]
-    # Ensure path ends with trailing slash
-    if not path.endswith('/'):
-        path += '/'
-else:
-    # If no argument provided, use current working directory
-    path = os.getcwd() + '/'
+def monitor_dir(path):
+    """Resolve a user-supplied path to the directory holding monitor files.
+
+    Accepts the monitor directory itself or the case directory above it.
+    """
+    path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+    nested = os.path.join(path, '3_monitor')
+    if os.path.basename(path) != '3_monitor' and os.path.isdir(nested):
+        return nested
+    return path
+
+
+path = monitor_dir(sys.argv[1] if len(sys.argv) > 1 else os.getcwd())
 
 print('='*100)
 print(f'Plotting monitor points from: {path}')
@@ -235,8 +394,17 @@ def get_int(prompt, default):
 print("\nConfiguration:")
 print("-" * 100)
 
-num_monitor_pts = get_int("Number of monitor points to plot", 5)
-thermo_on = get_yes_no("Include temperature data?", 'y')
+discovered_pts = sorted(
+    int(m.group(1))
+    for m in (re.match(r'domain\d+_monitor_pt(\d+)_flow\.dat$', f)
+              for f in (os.listdir(path) if os.path.isdir(path) else []))
+    if m
+)
+if discovered_pts:
+    print(f"Found monitor points: {', '.join(str(p) for p in discovered_pts)}")
+
+num_monitor_pts = get_int("Number of monitor points to plot",
+                          max(discovered_pts) if discovered_pts else 5)
 sample_factor = get_int("Sample factor (plot every nth point)", 10)
 plt_pts = get_yes_no("Plot monitor points?", 'y')
 plt_bulk = get_yes_no("Plot bulk/change history?", 'y')
@@ -247,209 +415,122 @@ avg_window = get_int("Running average window size (1 = off)", 0)
 print("-" * 100)
 print()
 
-# Generate file lists based on number of monitor points
 pt_files = [f'domain1_monitor_pt{i}_flow.dat' for i in range(1, num_monitor_pts + 1)]
 blk_files = ['domain1_monitor_metrics_history.log', 'domain1_monitor_change_history.log']
 
 # ====================================================================================================================================================
- 
+
 if plt_pts:
-    pt_usecols = (-7, -6, -5, -4, -3, -2, -1) if thermo_on else (-6, -5, -4, -3, -2, -1)
-
     for file in pt_files:
-        data = load_monitor_data(path + file, skiprows=3, sample=sample_factor,
-                                  usecols=pt_usecols)
+        file_path = os.path.join(path, file)
+        if not os.path.isfile(file_path):
+            continue
 
+        data, columns = load_monitor_data(file_path, sample=sample_factor)
         if data.size == 0:
             print(f"Skipping {file}: no valid data after filtering.")
             continue
 
         print(f'Plotting {len(data)} points for {file}...')
+        lookup = column_lookup(columns)
+        time = pick(data, lookup, 't', 'time')
+        if time is None:
+            time = data[:, 1] if data.shape[1] > 1 else data[:, 0]
 
-        time = data[:,0]
-        u = data[:,1]
-        v = data[:,2]
-        w = data[:,3]
-        p = data[:,4]
-        phi = data[:,5]
-        if thermo_on:
-            T = data[:,6]
+        # The header names time 't' and temperature 'T', which differ only by
+        # case, so temperature is matched case-sensitively.
+        temp_index = next((i for i, n in enumerate(columns) if n.strip() == 'T'), None)
+        panels = [
+            ('u-velocity', [('u-velocity', pick(data, lookup, 'u'))]),
+            ('v-velocity', [('v-velocity', pick(data, lookup, 'v'))]),
+            ('w-velocity', [('w-velocity', pick(data, lookup, 'w'))]),
+            ('Pressure', [('pressure', pick(data, lookup, 'p'))]),
+            ('Pressure Correction', [('press. corr.', pick(data, lookup, 'phi'))]),
+            ('Temperature', [('temperature',
+                              data[:, temp_index] if temp_index is not None else None)]),
+        ]
 
-        # Create subplots for all variables
-        num_subplots = 6 if thermo_on else 5
-        fig, axes = plt.subplots(num_subplots, 1, figsize=(10, 3*num_subplots), sharex=True)
-
-        # Subplot 0: u-velocity
-        plot_with_avg(axes[0], time, u, 'u-velocity', 'C0', avg_window)
-        axes[0].set_ylabel('u-velocity')
-        axes[0].legend()
-        axes[0].grid()
-        if auto_ylim: apply_robust_ylim(axes[0], u)
-        add_stats_box(axes[0], u)
-
-        # Subplot 1: v-velocity
-        plot_with_avg(axes[1], time, v, 'v-velocity', 'C1', avg_window)
-        axes[1].set_ylabel('v-velocity')
-        axes[1].legend()
-        axes[1].grid()
-        if auto_ylim: apply_robust_ylim(axes[1], v)
-        add_stats_box(axes[1], v)
-
-        # Subplot 2: w-velocity
-        plot_with_avg(axes[2], time, w, 'w-velocity', 'C2', avg_window)
-        axes[2].set_ylabel('w-velocity')
-        axes[2].legend()
-        axes[2].grid()
-        if auto_ylim: apply_robust_ylim(axes[2], w)
-        add_stats_box(axes[2], w)
-
-        # Subplot 3: Pressure
-        plot_with_avg(axes[3], time, p, 'pressure', 'C3', avg_window)
-        axes[3].set_ylabel('Pressure')
-        axes[3].legend()
-        axes[3].grid()
-        if auto_ylim: apply_robust_ylim(axes[3], p)
-        add_stats_box(axes[3], p)
-
-        # Subplot 4: Pressure Correction
-        plot_with_avg(axes[4], time, phi, 'press. corr.', 'C4', avg_window)
-        axes[4].set_ylabel('Pressure Correction')
-        axes[4].legend()
-        axes[4].grid()
-        if auto_ylim: apply_robust_ylim(axes[4], phi)
-        add_stats_box(axes[4], phi)
-
-        if thermo_on:
-            # Subplot 5: Temperature
-            plot_with_avg(axes[5], time, T, 'temperature', 'C5', avg_window)
-            axes[5].set_ylabel('Temperature')
-            axes[5].legend()
-            axes[5].grid()
-            if auto_ylim: apply_robust_ylim(axes[5], T)
-            add_stats_box(axes[5], T)
-            axes[5].set_xlabel('Time')
-        else:
-            axes[4].set_xlabel('Time')
-
-        fig.suptitle(f'{file} - Monitor Point Data', fontsize=14)
-        fig.tight_layout()
-        fig.savefig(f'{path}{file.replace("domain1_monitor_","").replace(".dat","_plot")}.png', dpi=300, bbox_inches='tight')
-        if display_plots:
-            plt.show()
-        plt.close(fig)
-
-        print(f'Saved subplot figure for {file}')
+        out = os.path.join(path, file.replace('domain1_monitor_', '').replace('.dat', '_plot.png'))
+        plot_panels(panels, time, f'{file} - Monitor Point Data', out,
+                    display_plots, auto_ylim, avg_window)
 
 if plt_bulk:
     for file in blk_files:
-        blk_data = load_monitor_data(path + file, skiprows=2, sample=sample_factor)
+        file_path = os.path.join(path, file)
+        if not os.path.isfile(file_path):
+            continue
 
-        if blk_data.size == 0:
+        data, columns = load_monitor_data(file_path, sample=sample_factor)
+        if data.size == 0:
             print(f"Skipping {file}: no valid data after filtering.")
             continue
 
-        if file == 'domain1_monitor_metrics_history.log':
-            time = blk_data[:,0]
-            MKE = blk_data[:,1]
-            qx = blk_data[:,2]
-            if thermo_on:
-                gx = blk_data[:,3]
-                T = blk_data[:,4]
-                h = blk_data[:,5]
+        lookup = column_lookup(columns)
+        time = pick(data, lookup, 'time')
+        if time is None:
+            time = data[:, 0]
 
-            # Create subplots for bulk quantities
-            num_subplots = 4 if thermo_on else 2
-            fig, axes = plt.subplots(num_subplots, 1, figsize=(10, 3*num_subplots), sharex=True)
+        if 'metrics_history' in file:
+            panels = [
+                ('Mass conservation', [
+                    ('global balance', pick(data, lookup, 'global mass balance')),
+                    ('interior', pick(data, lookup, 'max. mass conservation (interior)')),
+                    ('inlet', pick(data, lookup, 'max. mass conservation (inlet)')),
+                    ('outlet', pick(data, lookup, 'max. mass conservation (outlet)')),
+                ]),
+                ('Kinetic energy', [
+                    ('total kinetic energy', pick(data, lookup, 'total kinetic energy')),
+                ]),
+                ('Pressure', [
+                    ('mean dpdx', pick(data, lookup, 'mean dpdx')),
+                    ('global pressure drop', pick(data, lookup, 'global pressure drop')),
+                ]),
+                ('Bulk velocity', [
+                    ('qx', pick(data, lookup, 'bulk velocity qx')),
+                    ('qy', pick(data, lookup, 'bulk velocity qy')),
+                    ('qz', pick(data, lookup, 'bulk velocity qz')),
+                ]),
+                ('Bulk mass flux', [
+                    ('gx', pick(data, lookup, 'bulk mass flux gx')),
+                    ('gy', pick(data, lookup, 'bulk mass flux gy')),
+                    ('gz', pick(data, lookup, 'bulk mass flux gz')),
+                ]),
+                ('Bulk enthalpy', [
+                    ('bulk enthalpy', pick(data, lookup, 'bulk enthalpy')),
+                ]),
+                ('Bulk temperature', [
+                    ('bulk temperature', pick(data, lookup, 'bulk temperature')),
+                ]),
+            ]
+            title = 'Bulk Quantities'
+        else:
+            panels = [
+                ('Mass residual', [
+                    ('bulk', pick(data, lookup, 'mass residual (bulk)')),
+                    ('inlet', pick(data, lookup, 'mass residual (inlet)')),
+                    ('outlet', pick(data, lookup, 'mass residual (outlet)')),
+                ]),
+                ('Mass flux imbalance', [
+                    ('global', pick(data, lookup, 'global mass flux imbalance')),
+                ]),
+                ('Poisson diagnostics', [
+                    ('compatibility defect', pick(data, lookup, 'Poisson compatibility defect')),
+                    ('zero-mode projection', pick(data, lookup, 'Poisson zero-mode projection')),
+                ]),
+                ('Total mass', [
+                    ('total mass', pick(data, lookup, 'total mass')),
+                ]),
+                ('Mass drift', [
+                    ('drift from run start', pick(data, lookup, 'total mass drift')),
+                ]),
+                ('KE change rate', [
+                    ('kinetic energy change rate', pick(data, lookup, 'kinetic energy change rate')),
+                ]),
+            ]
+            title = 'Change History'
 
-            # Subplot 0: Mean Kinetic Energy
-            plot_with_avg(axes[0], time, MKE, 'Mean Kinetic Energy', 'C0', avg_window)
-            axes[0].set_ylabel('Mean Kinetic Energy')
-            axes[0].legend()
-            axes[0].grid()
-            if auto_ylim: apply_robust_ylim(axes[0], MKE)
-            add_stats_box(axes[0], MKE)
-
-            # Subplot 1: Bulk Velocity and Density * Bulk Velocity (on same plot)
-            plot_with_avg(axes[1], time, qx, 'Bulk Velocity', 'C1', avg_window)
-            if thermo_on:
-                plot_with_avg(axes[1], time, gx, 'Density * Bulk Velocity', 'C2', avg_window)
-            axes[1].set_ylabel('Velocity')
-            axes[1].legend()
-            axes[1].grid()
-            if auto_ylim:
-                combined = np.concatenate([qx, gx]) if thermo_on else qx
-                apply_robust_ylim(axes[1], combined)
-            add_stats_box(axes[1], qx)
-
-            if thermo_on:
-                # Subplot 2: Bulk Temperature
-                plot_with_avg(axes[2], time, T, 'Bulk Temperature', 'C3', avg_window)
-                axes[2].set_ylabel('Bulk Temperature')
-                axes[2].legend()
-                axes[2].grid()
-                if auto_ylim: apply_robust_ylim(axes[2], T)
-                add_stats_box(axes[2], T)
-
-                # Subplot 3: Bulk Enthalpy
-                plot_with_avg(axes[3], time, h, 'Bulk Enthalpy', 'C4', avg_window)
-                axes[3].set_ylabel('Bulk Enthalpy')
-                axes[3].legend()
-                axes[3].grid()
-                if auto_ylim: apply_robust_ylim(axes[3], h)
-                add_stats_box(axes[3], h)
-                axes[3].set_xlabel('Time')
-            else:
-                axes[1].set_xlabel('Time')
-
-            fig.suptitle('Bulk Quantities', fontsize=14)
-            fig.tight_layout()
-            fig.savefig(f'{path}{file.replace("domain1_monitor_","").replace(".log","_plot")}.png', dpi=300, bbox_inches='tight')
-            if display_plots:
-                plt.show()
-            plt.close(fig)
-            print(f'Saved metrics history plot for {file}')
-        
-        if file == 'domain1_monitor_change_history.log':
-            time = blk_data[:,0]
-            mass_cons = blk_data[:,1]
-            mass_chng_rt = blk_data[:,4]
-            KE_chng_rt = blk_data[:,5]
-
-            # Create subplots for change history
-            fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
-
-            # Subplot 0: Mass Conservation
-            plot_with_avg(axes[0], time, mass_cons, 'Mass Conservation', 'C0', avg_window)
-            axes[0].set_ylabel('Mass Conservation')
-            axes[0].legend()
-            axes[0].grid()
-            if auto_ylim: apply_robust_ylim(axes[0], mass_cons)
-            add_stats_box(axes[0], mass_cons)
-
-            # Subplot 1: Mass Change Rate
-            plot_with_avg(axes[1], time, mass_chng_rt, 'Mass Change Rate', 'C1', avg_window)
-            axes[1].set_ylabel('Mass Change Rate')
-            axes[1].legend()
-            axes[1].grid()
-            if auto_ylim: apply_robust_ylim(axes[1], mass_chng_rt)
-            add_stats_box(axes[1], mass_chng_rt)
-
-            # Subplot 2: Kinetic Energy Change Rate
-            plot_with_avg(axes[2], time, KE_chng_rt, 'Kinetic Energy Change Rate', 'C2', avg_window)
-            axes[2].set_ylabel('KE Change Rate')
-            axes[2].legend()
-            axes[2].grid()
-            if auto_ylim: apply_robust_ylim(axes[2], KE_chng_rt)
-            add_stats_box(axes[2], KE_chng_rt)
-            axes[2].set_xlabel('Time')
-
-            fig.suptitle('Change History', fontsize=14)
-            fig.tight_layout()
-            fig.savefig(f'{path}{file.replace("domain1_monitor_","").replace(".log","_plot")}.png', dpi=300, bbox_inches='tight')
-            if display_plots:
-                plt.show()
-            plt.close(fig)
-            print(f'Saved change history plot for {file}')
+        out = os.path.join(path, file.replace('domain1_monitor_', '').replace('.log', '_plot.png'))
+        plot_panels(panels, time, title, out, display_plots, auto_ylim, avg_window)
 
 print('='*100)
 print(f'All plots saved to: {path}')
