@@ -599,12 +599,71 @@ class TurbulenceXDMFData:
     def load_all(self) -> None:
         """Load all XDMF files for all cases and timesteps"""
         for case in self.cases:
+            self._check_averaging(case)
             for timestep in self.timesteps:
+                self._report_missing_groups(case, timestep)
                 self._load_single(case, timestep)
             if self.average_over_timesteps:
                 self._average_over_timesteps(case, self.timesteps)
         if self.average_over_timesteps:
             self.timesteps = ['avg']
+
+    def _check_averaging(self, case: str) -> None:
+        """Warn when the requested averaging is not valid for the case.
+
+        Averaging a direction that is not periodic is not a smoothing
+        choice, it is wrong: on an inlet/outlet case it folds the inlet
+        into the outlet and the profile belongs to neither. The case's own
+        input file says which directions are periodic, so say so rather
+        than letting it pass.
+        """
+        import mesh_analysis as ma
+
+        case_dir = ut.case_path(self.folder_path, case)
+        periodic = ma.read_periodicity(case_dir)
+        if periodic is None:
+            return
+
+        for axis, requested in (('x', self.average_x), ('z', self.average_z)):
+            if requested and not periodic[axis]:
+                print(f"WARNING: {case}: averaging {axis}, but {axis} is not "
+                      f"periodic in this case. That mixes the two ends of the "
+                      f"domain; for a developing flow use profile/slice "
+                      f"coordinates to pick stations instead.")
+        # The quiet direction of the mistake: a homogeneous direction left
+        # unaveraged gives noisier statistics than it needs to. Only worth
+        # saying for the 3-D tiers - tsp_avg output arrives already averaged
+        # over its periodic directions, so leaving the flag off is correct.
+        if any(str(d).startswith('tsp_avg') for d in (self.data_types or [])):
+            return
+        for axis, requested in (('x', self.average_x), ('z', self.average_z)):
+            if periodic[axis] and not requested:
+                print(f"Note: {case}: {axis} is periodic but not being averaged; "
+                      f"averaging it would reduce the sampling noise.")
+
+    def _report_missing_groups(self, case: str, timestep: str) -> None:
+        """Say which physics groups have nothing at this timestep.
+
+        Flow, thermo and MHD are written at their own frequencies, so a
+        case can hold flow at a timestep that has no thermo. Without this
+        the only clue is a generic 'variable not found' several lines
+        later, and a silently dropped temperature profile.
+        """
+        case_dir = ut.case_path(self.folder_path, case)
+        tiers = [str(d) for d in (self.data_types or [])] or ['tsp_avg']
+        for group in ut.VISU_GROUPS:
+            catalogue = ut.visu_catalogue(case_dir, group)
+            if not catalogue:
+                continue                      # this case has no such group at all
+            wanted = [t for t in tiers if t in catalogue]
+            if not wanted:
+                continue                      # group exists, but not in a tier we read
+            if any(timestep in catalogue[t] for t in wanted):
+                continue
+            available = sorted({s for t in wanted for s in catalogue[t]}, key=int)
+            print(f"Note: {case}: no {group} {'/'.join(wanted)} data at timestep "
+                  f"{timestep} (it exists at: {', '.join(available)}). "
+                  f"Statistics needing {group} will be skipped.")
 
     def _load_tsp_avg_profiles(self, case: str, timestep: str, existing_files: List[str]) -> bool:
         """Fall back to the ASCII tsp_avg profile table when there is no XDMF.

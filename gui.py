@@ -89,43 +89,7 @@ class ScrollableFrame(ttk.Frame):
         self._scroll_job = None
 
 
-def visu_catalogue(visu_folder, group):
-    """Timesteps present for each data type of one physics group.
-
-    A case does not carry every tier: statistics start partway through a run,
-    thermo is written less often than flow, and a run with no averaging has no
-    t_avg at all. Reading the directory is the only way to know which
-    combinations will actually load.
-    """
-    try:
-        entries = os.listdir(visu_folder)
-    except OSError:
-        return {}
-
-    prefixes = {'inst': f'domain1_{group}_',
-                't_avg': f'domain1_t_avg_{group}_',
-                'tsp_avg': f'domain1_tsp_avg_{group}_'}
-    found = {}
-    for name in entries:
-        if not name.endswith('.xdmf') or '_grid' in name:
-            continue
-        stem = name[:-len('.xdmf')]
-        tail = stem.rsplit('_', 1)[-1]
-        if not tail.isdigit():
-            continue
-        if '_slices_visu_' in stem:
-            if stem.startswith(prefixes['inst']):
-                found.setdefault('2d_slice', set()).add(tail)
-            continue
-        # Longest prefix first: a t_avg name also starts with the inst prefix
-        # only after the averaging tag, so test the specific ones first.
-        for dtype, prefix in sorted(prefixes.items(), key=lambda kv: -len(kv[1])):
-            if stem.startswith(prefix):
-                found.setdefault(dtype, set()).add(tail)
-                break
-    if 'inst' in found:
-        found.setdefault('2d_slice', set()).update(found['inst'])
-    return {k: sorted(v, key=int) for k, v in found.items() if v}
+from utils import visu_catalogue
 
 
 def _plain_axes(axis_labels):
@@ -877,6 +841,19 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
             if key in lowered:
                 self.vars['geometry'].set(geom)
                 break
+
+        # Averaging follows the case's periodicity. Averaging a direction
+        # that is not periodic folds the two ends of the domain together,
+        # so the default must not be left to chance.
+        periodic = ma.read_periodicity(case_dir)
+        if periodic is not None:
+            already_averaged = self.vars['xdmf_data_type'].get().startswith('tsp_avg')
+            self.vars['average_x_direction'].set(periodic['x'] and not already_averaged)
+            self.vars['average_z_direction'].set(periodic['z'] and not already_averaged)
+            homogeneous = [a for a in ('x', 'z') if periodic[a]] or ['none']
+            self._scan_lbl.configure(
+                text=self._scan_lbl.cget('text')
+                     + f"   periodic: {', '.join(homogeneous)}")
 
     def _scan_cases(self):
         """Report what the chosen folder actually contains.

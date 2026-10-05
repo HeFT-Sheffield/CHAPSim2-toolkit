@@ -235,6 +235,47 @@ def _to_bool(token):
     return token.strip().strip('.').lower().startswith('t')
 
 
+#: Boundary condition code for a periodic face (src/modules.f90).
+IBC_PERIODIC = 1
+
+
+def read_periodicity(path):
+    """Which directions a case is periodic in, read from its input file.
+
+    Args:
+        path: an input_chapsim.ini, or a case directory holding one.
+
+    Returns:
+        dict with 'x', 'y', 'z' -> bool, or None when no input file is there.
+
+    Mirrors the rule in Read_input_parameters: a direction is periodic when
+    any velocity component carries IBC_PERIODIC on either face. A pipe is a
+    special case - the solver forces y non-periodic there, because that
+    coordinate is the radius and its lower end is the axis, not a face.
+    """
+    path = os.path.expanduser(os.path.expandvars(str(path)))
+    if os.path.isdir(path):
+        path = os.path.join(path, 'input_chapsim.ini')
+    if not os.path.isfile(path):
+        return None
+
+    sections = parse_input_file(path)
+    periodic = {}
+    for axis in ('x', 'y', 'z'):
+        faces = []
+        for component in ('u', 'v', 'w'):
+            for index in (0, 1):
+                faces.append(get_entry(sections, 'bc', f'ifbc{axis}_{component}',
+                                       int, index=index, default=None))
+        periodic[axis] = any(f == IBC_PERIODIC for f in faces)
+
+    icase = get_entry(sections, 'domain', 'icase', _enum(ICASE_TOKENS, 'icase'),
+                      default=ICASE_OTHERS)
+    if icase == ICASE_PIPE:
+        periodic['y'] = False
+    return periodic
+
+
 def _first_key(sections, section, *keys):
     """Return the first of `keys` present in `section`, else the first given.
 

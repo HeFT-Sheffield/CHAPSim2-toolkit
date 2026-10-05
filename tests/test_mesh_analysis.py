@@ -169,3 +169,66 @@ def test_from_values_rejects_an_unknown_field():
     except AttributeError:
         return
     raise AssertionError('expected AttributeError for an unknown field')
+
+
+# ---------------------------------------------------------------------------
+# Periodicity. Averaging a direction that is not periodic folds the two ends
+# of the domain together, so which directions are homogeneous has to come
+# from the case rather than from whoever filled in the config.
+# ---------------------------------------------------------------------------
+
+PERIODIC_BC = """\
+[domain]
+icase= {icase}
+
+[bc]
+ifbcx_u= {x}
+ifbcx_v= {x}
+ifbcx_w= {x}
+ifbcy_u= {y}
+ifbcy_v= {y}
+ifbcy_w= {y}
+ifbcz_u= {z}
+ifbcz_v= {z}
+ifbcz_w= {z}
+"""
+
+
+def _periodicity(icase='channel', x='1,1', y='4,4', z='1,1'):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'input_chapsim.ini')
+        with open(path, 'w') as fh:
+            fh.write(PERIODIC_BC.format(icase=icase, x=x, y=y, z=z))
+        return ma.read_periodicity(path)
+
+
+def test_doubly_periodic_channel():
+    assert _periodicity() == {'x': True, 'y': False, 'z': True}
+
+
+def test_inlet_outlet_is_not_periodic_in_x():
+    """10 is a database inlet and 7 a convective outlet, not periodic."""
+    assert _periodicity(x='10,7') == {'x': False, 'y': False, 'z': True}
+
+
+def test_one_periodic_face_makes_the_direction_periodic():
+    """The solver promotes the pair when either face says periodic."""
+    assert _periodicity(x='1,4')['x'] is True
+
+
+def test_a_pipe_is_never_periodic_in_the_radial_direction():
+    """y is the radius there and its lower end is the axis, not a face."""
+    assert _periodicity(icase='pipe', y='1,1')['y'] is False
+    assert _periodicity(icase='channel', y='1,1')['y'] is True
+
+
+def test_a_case_directory_is_accepted_as_well_as_the_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, 'input_chapsim.ini'), 'w') as fh:
+            fh.write(PERIODIC_BC.format(icase='channel', x='1,1', y='4,4', z='1,1'))
+        assert ma.read_periodicity(tmp) == {'x': True, 'y': False, 'z': True}
+
+
+def test_no_input_file_gives_no_answer_rather_than_a_guess():
+    with tempfile.TemporaryDirectory() as tmp:
+        assert ma.read_periodicity(tmp) is None

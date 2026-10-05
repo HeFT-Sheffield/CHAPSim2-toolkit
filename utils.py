@@ -1314,6 +1314,45 @@ def group_xdmf_paths(folder_path, case, timestep, group='flow'):
     return found
 
 
+def visu_catalogue(path, group='flow'):
+    """Timesteps present for each data type of one physics group.
+
+    A case does not carry every tier: statistics start partway through a run,
+    thermo is written less often than flow, and a run with no averaging has no
+    t_avg at all. Reading the directory is the only way to know which
+    combinations will actually load.
+    """
+    try:
+        entries = os.listdir(resolve_case_dirs(path)['xdmf'])
+    except OSError:
+        return {}
+
+    prefixes = {'inst': f'domain1_{group}_',
+                't_avg': f'domain1_t_avg_{group}_',
+                'tsp_avg': f'domain1_tsp_avg_{group}_'}
+    found = {}
+    for name in entries:
+        if not name.endswith('.xdmf') or '_grid' in name:
+            continue
+        stem = name[:-len('.xdmf')]
+        tail = stem.rsplit('_', 1)[-1]
+        if not tail.isdigit():
+            continue
+        if '_slices_visu_' in stem:
+            if stem.startswith(prefixes['inst']):
+                found.setdefault('2d_slice', set()).add(tail)
+            continue
+        # Longest prefix first: a t_avg name also starts with the inst prefix
+        # only after the averaging tag, so test the specific ones first.
+        for dtype, prefix in sorted(prefixes.items(), key=lambda kv: -len(kv[1])):
+            if stem.startswith(prefix):
+                found.setdefault(dtype, set()).add(tail)
+                break
+    if 'inst' in found:
+        found.setdefault('2d_slice', set()).update(found['inst'])
+    return {k: sorted(v, key=int) for k, v in found.items() if v}
+
+
 def find_available_timesteps(path):
     """List the timesteps a case has XDMF field output for, sorted numerically.
 

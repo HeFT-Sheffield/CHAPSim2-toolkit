@@ -199,3 +199,86 @@ def _mean_streamwise_profile(case):
     variables, _ = ut.load_tsp_avg_profiles(
         case, (ut.find_available_timesteps(case) or ['0'])[-1])
     return variables.get('u1')
+
+
+def test_periodicity_matches_the_case_names():
+    """Read from each case's own input file and checked against what the
+    name says it is - a '_periodic' case is streamwise periodic, an
+    '_inout' case is not, and no pipe is periodic in its radius."""
+    import mesh_analysis as ma
+
+    checked, failures = 0, []
+    for case in _require_cases():
+        name = os.path.basename(case)
+        periodic = ma.read_periodicity(case)
+        if periodic is None:
+            continue
+        checked += 1
+        if '_periodic' in name and not periodic['x']:
+            failures.append(f'{name}: periodic case but x is not periodic')
+        if '_inout' in name and periodic['x']:
+            failures.append(f'{name}: inlet/outlet case but x reads as periodic')
+        if name.startswith('pipe') and periodic['y']:
+            failures.append(f'{name}: pipe with a periodic radius')
+        if not periodic['z'] and 'duct' not in name and not name.startswith('tgv'):
+            failures.append(f'{name}: expected a periodic spanwise direction')
+    assert checked, 'no input files found'
+    assert not failures, failures
+
+
+def test_averaging_a_non_periodic_direction_is_reported():
+    """Averaging x on an inlet/outlet case mixes the inlet with the outlet.
+    It must not pass quietly."""
+    import contextlib
+    import io
+
+    import turb_stats as ts
+
+    inout = next((c for c in _require_cases()
+                  if '_inout' in os.path.basename(c)
+                  and ut.find_available_timesteps(c)), None)
+    if inout is None:
+        skip('no inlet/outlet case with output available')
+
+    loader = ts.TurbulenceXDMFData(
+        os.path.dirname(inout), [os.path.basename(inout)],
+        [ut.find_available_timesteps(inout)[-1]],
+        data_types=['tsp_avg'], average_x=True, average_z=False)
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        loader.load_all()
+    message = printed.getvalue()
+    assert 'not periodic' in message, message
+
+
+def test_a_group_absent_at_a_timestep_is_reported():
+    """Thermo is written less often than flow; a dropped temperature
+    profile should say why."""
+    import contextlib
+    import io
+
+    import turb_stats as ts
+
+    target = None
+    for case in _require_cases():
+        steps = ut.find_available_timesteps(case)
+        if not steps:
+            continue
+        flow = ut.visu_catalogue(case, 'flow').get('tsp_avg') or []
+        thermo = ut.visu_catalogue(case, 'thermo').get('tsp_avg') or []
+        missing = [s for s in flow if s not in thermo]
+        if thermo and missing:
+            target = (case, missing[-1])
+            break
+    if target is None:
+        skip('no case writes flow and thermo at different timesteps')
+
+    case, step = target
+    loader = ts.TurbulenceXDMFData(
+        os.path.dirname(case), [os.path.basename(case)], [step],
+        data_types=['tsp_avg'], average_x=False, average_z=False)
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        loader.load_all()
+    message = printed.getvalue()
+    assert 'no thermo' in message and 'it exists at' in message, message
