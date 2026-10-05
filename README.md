@@ -61,6 +61,24 @@ unrolled as (r, θ), with the axes labelled accordingly, not as a disc.
 
 **thermal_BC_calc.py**: Property functions for liquid metals in CHAPSim2, functionality to output NIST format data file, convert a given Grashof number to constant wall temperature difference or heat flux (channel flow), calculate Prandtl number. Interactive input.
 
+## Tests:
+
+```bash
+python run_tests.py                 # everything
+python run_tests.py test_xdmf       # one module
+python run_tests.py -k cylindrical  # tests matching a name
+```
+
+Uses pytest when it is installed and falls back to a built-in runner when it is
+not, so the suite also runs on a cluster where installing packages is awkward.
+
+Most tests build small synthetic cases on disk in the formats CHAPSim2 writes,
+so nothing binary lives in the repository and the expected values are analytic.
+`tests/test_solver_cases.py` additionally reads CHAPSim2's own regression output
+— every case, every averaging tier — which is what catches the solver's formats
+changing. Those tests skip themselves when the solver is not checked out
+alongside; set `CHAPSIM2_TESTS` to point at its `tests/` directory.
+
 ## Reference Data:
 
 Isothermal channel (MKM180), square duct (KTH) reference data is provided as well as isothermal and heated MHD reference data (NK). All reference data is openly accessible from published sources. Copyright for reference datasets remains with the original authors/publishers. See individual data files for citations.
