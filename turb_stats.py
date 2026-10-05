@@ -152,6 +152,9 @@ class Config:
     two_point_corr_x_coords: str = ''
     two_point_corr_max_sep: int = 0          # in cells; 0 -> half the spanwise domain
     two_point_corr_mean_mode: str = 't_avg'  # 't_avg' or 'snapshot'
+    # Set once apply_case_inputs has run, so a caller that applies the case
+    # settings itself and then builds a loader is not told about them twice.
+    case_inputs_applied: bool = False
 
     @classmethod
     def from_module(cls, config_module):
@@ -162,7 +165,7 @@ class Config:
             cases=getattr(config_module, 'cases', []),
             timesteps=getattr(config_module, 'timesteps', []),
             average_over_timesteps=getattr(config_module, 'average_over_timesteps', False),
-            thermo_on=getattr(config_module, 'thermo_on', False),
+            thermo_on=getattr(config_module, 'thermo_on', None),
             forcing=getattr(config_module, 'forcing', 'CMF'),
             Re=getattr(config_module, 'Re', [1.0]),
             ref_temp=getattr(config_module, 'ref_temp', [300.0]),
@@ -171,7 +174,7 @@ class Config:
             wall_heat_flux=getattr(config_module, 'wall_heat_flux', [0.0]),
             working_fluid=getattr(config_module, 'working_fluid', 'lithium'),
             gravity_direction=getattr(config_module, 'gravity_direction', [0.0, -1.0, 0.0]),
-            mhd_on=getattr(config_module, 'mhd_on', False),
+            mhd_on=getattr(config_module, 'mhd_on', None),
             mag_field_direction=getattr(config_module, 'mag_field_direction', [0.0, 1.0, 0.0]),
             stuart_number=getattr(config_module, 'stuart_number', 0.0),
             ux_velocity_on=getattr(config_module, 'ux_velocity_on', False),
@@ -344,6 +347,112 @@ class PlotConfig:
 # DATA LOADING & MANAGEMENT
 # =====================================================================================================================================================
 
+#: Config fields that the solver's own input file already records, paired
+#: with the key read_case_parameters returns them under. Per-case fields are
+#: lists indexed against `cases`; the rest are single values.
+CASE_DERIVED_FIELDS = {
+    'Re': ('Re', True),
+    'ref_temp': ('ref_temp', True),
+    'ref_length': ('ref_length', True),
+    'working_fluid': ('working_fluid', False),
+    'geometry': ('geometry', False),
+    'thermo_on': ('thermo_on', False),
+    'mhd_on': ('mhd_on', False),
+    'stuart_number': ('stuart_number', False),
+    'mag_field_direction': ('mag_field_direction', False),
+    'gravity_direction': ('gravity_direction', False),
+}
+
+
+def _settle_case_switches(config: Config) -> Config:
+    """Turn a switch still left as None into a definite "off".
+
+    thermo_on and mhd_on default to None so the case can set them. A case
+    with no input file leaves them None, which the rest of the code would
+    read as off anyway; making that explicit keeps a None from travelling
+    into a comparison that would quietly do the wrong thing.
+    """
+    for field in ('thermo_on', 'mhd_on'):
+        if getattr(config, field, None) is None:
+            setattr(config, field, False)
+    return config
+
+
+def apply_case_inputs(config: Config, quiet: bool = False) -> Config:
+    """Fill in whatever the cases' own input_chapsim.ini already states.
+
+    The solver input file is the authoritative record of how a case was run.
+    Transcribing the same half-dozen numbers into config.py is both a chore
+    and a silent hazard - a wrong Reynolds number rescales every
+    u_tau-normalised profile with nothing to show for it.
+
+    A field left as None (or an empty list) is taken from the case. A field
+    the user set is kept, but a disagreement with the case is reported,
+    because that is usually a mistake rather than an intention.
+
+    Returns the same Config, modified in place.
+    """
+    import mesh_analysis as ma
+
+    if config.case_inputs_applied:
+        return config
+    config.case_inputs_applied = True
+
+    per_case = {}
+    for case in config.cases:
+        params = ma.read_case_parameters(ut.case_path(config.folder_path, case))
+        if params is not None:
+            per_case[case] = params
+    if not per_case:
+        return _settle_case_switches(config)
+
+    def say(message):
+        if not quiet:
+            print(message)
+
+    for field, (key, is_list) in CASE_DERIVED_FIELDS.items():
+        current = getattr(config, field, None)
+        found = {c: p[key] for c, p in per_case.items() if key in p}
+        if not found:
+            continue
+
+        if is_list:
+            if not current:                       # None or []
+                setattr(config, field, [found.get(c) for c in config.cases])
+                say(f'  {field}: {[found.get(c) for c in config.cases]} (from input_chapsim.ini)')
+                continue
+            for index, case in enumerate(config.cases):
+                if case not in found or index >= len(current):
+                    continue
+                given, actual = current[index], found[case]
+                if given is not None and actual and abs(float(given) - float(actual)) > 1e-9 * max(1.0, abs(float(actual))):
+                    say(f'WARNING: {case}: {field} is set to {given} but the case '
+                        f'was run with {actual}. Using {given}; set it to None to '
+                        f'take the value from the case.')
+        else:
+            values = set(found.values()) if not isinstance(
+                next(iter(found.values())), list) else None
+            actual = next(iter(found.values()))
+            if current is None:
+                setattr(config, field, actual)
+                say(f'  {field}: {actual} (from input_chapsim.ini)')
+            elif values is not None and len(values) == 1 and current != actual:
+                say(f'WARNING: {field} is set to {current!r} but the case was run '
+                    f'with {actual!r}. Using {current!r}; set it to None to take '
+                    f'the value from the case.')
+
+    _settle_case_switches(config)
+
+    # The toolkit carries liquid-metal properties only; a case run with
+    # anything else has to say so rather than fall back to a wrong fluid.
+    for case, params in per_case.items():
+        if params.get('thermo_on') and not params.get('working_fluid'):
+            say(f'Note: {case} was run with {params.get("ifluid_name")}, which the '
+                f'toolkit has no property data for. Thermal statistics needing '
+                f'fluid properties will fall back or be skipped.')
+    return config
+
+
 def create_data_loader(config: Config, data_types: List[str] = None):
     """
     Factory function to create the appropriate data loader based on input_format.
@@ -355,6 +464,10 @@ def create_data_loader(config: Config, data_types: List[str] = None):
     Returns:
         Data loader instance (TurbulenceTextData or TurbulenceXDMFData)
     """
+    # One source of truth: the case's own input file fills in anything the
+    # user left unset, before any loader is built.
+    apply_case_inputs(config)
+
     fmt = config.input_format.lower()
 
     if fmt in ['xdmf', 'visu']:

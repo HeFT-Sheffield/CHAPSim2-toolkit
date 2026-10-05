@@ -1,4 +1,15 @@
 # Configuration file for turb_stats script ============================================================================================================
+#
+# Settings left as None are read from each case's own input_chapsim.ini when
+# the case is loaded: the Reynolds number, the reference temperature and
+# length, the geometry, the working fluid, whether heat transfer and MHD were
+# on, the gravity and magnetic field directions and the Stuart number. That
+# file is the solver's own record of how the run was set up, so it is the one
+# place these belong. Set a value here only to override the case, and the
+# toolkit will say so if the two disagree.
+#
+# The bulk velocity and the wall heat flux are outcomes of a run rather than
+# inputs to it, so they are not in the input file and are given below.
 
 # Define input cases ==================================================================================================================================
 
@@ -16,21 +27,23 @@ average_x_direction = False # set False for spatially developing (inlet/outlet) 
 average_z_direction = True # set False for duct flows, and for tsp_avg input (already averaged)
 
 forcing = 'CMF' # 'CMF' or 'CPG', constant mass flux or pressure gradient.
-Re = [5000] # indexing matches 'cases' if different Re used for different cases. Use bulk reference value for CPG.
+# None means 'read it from the case's input_chapsim.ini', which is where the solver
+# recorded it. Set a value only to override, and the toolkit will say if it disagrees.
+Re = None # e.g. [5000]; one per case if they differ. Use the bulk value for CPG.
 
 # Thermo/ Variable Properties
-thermo_on = True # Below reference values are used for thermo statistics, not necessary for isothermal flows
-ref_temp = [570] # Kelvin
-ref_length = [0.05] # m
+thermo_on = None # from the case's ithermo. The reference values below are only used when it is on.
+ref_temp = None # [K]; from the case's ref_t0
+ref_length = None # [m]; from the case's ref_l0
 ref_bulk_velocity = [0.0900625] # m/s
 wall_heat_flux = [0.0] # W/m^2, positive for heating, negative for cooling
-working_fluid = 'lithium' # Only liquid metals available.
-gravity_direction = [0, 0, 0] # [x, y, z]
+working_fluid = None # from the case's ifluid. Only liquid metals have property data.
+gravity_direction = None # [x, y, z]; from the case's igravity
 
 # Magnetohydrodynamics
-mhd_on = True
-mag_field_direction = [0, 0, 0] # [x, y, z]
-stuart_number = 0.0
+mhd_on = None # from the case's imhd
+mag_field_direction = None # [x, y, z]; from the case's B_static
+stuart_number = None # from the case's NStuart, or derived as Ha^2/Re from NHartmn
 
 # Output ==============================================================================================================================================
 
@@ -81,7 +94,7 @@ norm_ux_by_u_tau = True
 norm_y_to_y_plus = False
 norm_temp_by_ref_temp = False
 
-geometry = 'channel' # 'channel', 'pipe', 'annulus' or 'duct'. Labels the wall-normal axis (r for cylindrical cases).
+geometry = None # 'channel', 'pipe', 'annulus' or 'duct'; from the case's icase
 
 # Plotting options ------------------------------------------------------------------------------------------------------------------------------------
 

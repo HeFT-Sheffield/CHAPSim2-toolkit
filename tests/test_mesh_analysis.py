@@ -232,3 +232,125 @@ def test_a_case_directory_is_accepted_as_well_as_the_file():
 def test_no_input_file_gives_no_answer_rather_than_a_guess():
     with tempfile.TemporaryDirectory() as tmp:
         assert ma.read_periodicity(tmp) is None
+
+
+# ---------------------------------------------------------------------------
+# read_case_parameters: the input file as the one source of run settings
+# ---------------------------------------------------------------------------
+
+CASE_INPUT = """\
+[decomposition]
+nxdomain= 1
+
+[domain]
+icase= {icase}
+lxx= 12.56
+lyt= 1.0
+lyb= -1.0
+lzz= 6.283
+
+[bc]
+ifbcx_u= {x}
+ifbcx_v= {x}
+ifbcx_w= {x}
+ifbcy_u= 4,4
+ifbcy_v= 4,4
+ifbcy_w= 4,4
+ifbcz_u= 1,1
+ifbcz_v= 1,1
+ifbcz_w= 1,1
+
+[mesh]
+ncx= 64
+ncy= 48
+ncz= 32
+istret= {istret}
+rstret= 3fmd,1.25
+
+[flowtype]
+ithermo= {ithermo}
+imhd= {imhd}
+
+[flow]
+ren= {ren}
+
+[scheme]
+dt= 0.002
+
+[thermo]
+ithermo= {ithermo}
+igravity= 0.0,-1.0,0.0
+ifluid= {ifluid}
+ref_l0= 0.0015
+ref_t0= 645.15
+
+[mhd]
+imhd_xdom= {imhd}
+NStuart= {nstuart}
+NHartmn= {nhartmn}
+B_static= 0.0, 10.0, 0.0
+"""
+
+
+def _case_parameters(**kwargs):
+    fields = dict(icase='channel', x='1,1', istret='twosides', ren='5000.0',
+                  ithermo='.true.', imhd='.true.', ifluid='lithium',
+                  nstuart='.false., 0.0', nhartmn='.true., 10.0')
+    fields.update(kwargs)
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, 'input_chapsim.ini'), 'w') as fh:
+            fh.write(CASE_INPUT.format(**fields))
+        return ma.read_case_parameters(tmp)
+
+
+def test_the_run_settings_come_back_from_the_input_file():
+    params = _case_parameters()
+    assert params['Re'] == 5000.0
+    assert params['ref_temp'] == 645.15
+    assert params['ref_length'] == 0.0015
+    assert params['geometry'] == 'channel'
+    assert params['thermo_on'] is True
+    assert params['mhd_on'] is True
+    assert params['dt'] == 0.002
+    assert params['cells'] == [64, 48, 32]
+    assert params['periodic'] == {'x': True, 'y': False, 'z': True}
+    assert params['gravity_direction'] == [0.0, -1.0, 0.0]
+    assert params['mag_field_direction'] == [0.0, 10.0, 0.0]
+
+
+def test_a_hartmann_number_is_converted_to_the_stuart_number():
+    """The solver takes either; the toolkit works in N = Ha^2 / Re."""
+    params = _case_parameters(ren='5000.0', nhartmn='.true., 10.0')
+    assert params['hartmann_number'] == 10.0
+    assert params['stuart_number'] == 100.0 / 5000.0
+
+
+def test_a_stuart_number_is_taken_as_given():
+    params = _case_parameters(nstuart='.true., 0.5', nhartmn='.false., 10.0')
+    assert params['stuart_number'] == 0.5
+    assert 'hartmann_number' not in params
+
+
+def test_neither_number_switched_on_leaves_the_stuart_number_unset():
+    params = _case_parameters(nstuart='.false., 0.5', nhartmn='.false., 10.0')
+    assert 'stuart_number' not in params
+
+
+def test_the_geometry_comes_from_icase_not_the_folder_name():
+    assert _case_parameters(icase='pipe')['geometry'] == 'pipe'
+    assert _case_parameters(icase='annular')['geometry'] == 'annulus'
+
+
+def test_a_fluid_the_toolkit_has_no_properties_for_is_named_not_guessed():
+    params = _case_parameters(ifluid='scp_water')
+    assert 'working_fluid' not in params
+    assert params['ifluid_name'] and 'water' in params['ifluid_name'].lower()
+
+
+def test_a_fluid_the_toolkit_knows_maps_to_its_own_name():
+    assert _case_parameters(ifluid='lithium')['working_fluid'] == 'lithium'
+
+
+def test_no_input_file_gives_no_parameters_rather_than_defaults():
+    with tempfile.TemporaryDirectory() as tmp:
+        assert ma.read_case_parameters(tmp) is None

@@ -834,7 +834,8 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
         if latest:
             self._t_timesteps.delete('1.0', tk.END)
             self._t_timesteps.insert('1.0', latest[0])
-        # The geometry drives the axis label and which controls apply.
+        # Geometry comes from the case file below; the name is only a
+        # fallback for a case that has no input_chapsim.ini.
         lowered = name.lower()
         for key, geom in (('pipe', 'pipe'), ('annular', 'annulus'),
                           ('duct', 'duct'), ('channel', 'channel')):
@@ -842,10 +843,37 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
                 self.vars['geometry'].set(geom)
                 break
 
+        # Everything the solver recorded about how the case was run. Typing
+        # these in a second place is how a wrong Reynolds number ends up
+        # rescaling every normalised profile.
+        params = ma.read_case_parameters(case_dir) or {}
+        single = [('Re', self._t_re), ('ref_temp', self._t_ref_temp),
+                  ('ref_length', self._t_ref_len)]
+        for key, widget in single:
+            if params.get(key) is not None:
+                widget.delete('1.0', tk.END)
+                widget.insert('1.0', f'{params[key]:g}')
+        for key, var in (('geometry', 'geometry'), ('thermo_on', 'thermo_on'),
+                         ('mhd_on', 'mhd_on'), ('working_fluid', 'working_fluid')):
+            if params.get(key) is not None and var in self.vars:
+                self.vars[var].set(params[key])
+        if params.get('stuart_number') is not None:
+            self._t_stuart_number.delete('1.0', tk.END)
+            self._t_stuart_number.insert('1.0', f"{params['stuart_number']:g}")
+        for key, widget in (('mag_field_direction', self._t_mag_field_dir),
+                            ('gravity_direction', self._t_gravity_dir)):
+            if params.get(key):
+                widget.delete('1.0', tk.END)
+                widget.insert('1.0', ', '.join(f'{v:g}' for v in params[key]))
+        if params.get('thermo_on') and not params.get('working_fluid'):
+            self._log(f"{name} was run with {params.get('ifluid_name')}, which the "
+                      f"toolkit has no property data for; the working fluid is "
+                      f"left as it was.")
+
         # Averaging follows the case's periodicity. Averaging a direction
         # that is not periodic folds the two ends of the domain together,
         # so the default must not be left to chance.
-        periodic = ma.read_periodicity(case_dir)
+        periodic = params.get('periodic') or ma.read_periodicity(case_dir)
         if periodic is not None:
             already_averaged = self.vars['xdmf_data_type'].get().startswith('tsp_avg')
             self.vars['average_x_direction'].set(periodic['x'] and not already_averaged)

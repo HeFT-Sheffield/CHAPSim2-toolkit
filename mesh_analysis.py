@@ -239,6 +239,99 @@ def _to_bool(token):
 IBC_PERIODIC = 1
 
 
+#: CHAPSim2 ifluid index -> the key utils.get_fluid_properties understands.
+#: The supercritical fluids and plain water have no property class in the
+#: toolkit, so they map to nothing rather than to a plausible wrong fluid.
+IFLUID_TO_TOOLKIT = dict(FLUID_TOOLKIT_KEYS)
+
+
+def input_file_for(path):
+    """The input_chapsim.ini for a case directory, or None."""
+    path = os.path.expanduser(os.path.expandvars(str(path)))
+    if os.path.isdir(path):
+        path = os.path.join(path, 'input_chapsim.ini')
+    return path if os.path.isfile(path) else None
+
+
+def read_case_parameters(path):
+    """Everything the post-processing needs that the case already states.
+
+    The solver input file is the one authoritative record of how a case was
+    run, so the toolkit reads it rather than asking the user to transcribe
+    the same half-dozen numbers into a second place and get one of them
+    wrong. A wrong Reynolds number rescales every u_tau-normalised profile
+    without any sign that something is off.
+
+    Args:
+        path: an input_chapsim.ini, or a case directory holding one.
+
+    Returns:
+        dict of the values that could be read, or None when there is no
+        input file. Keys are the names turb_stats.Config uses. Anything the
+        input file does not record - the bulk velocity and the wall heat
+        flux, which are outputs of the run rather than inputs - is absent.
+    """
+    ini = input_file_for(path)
+    if ini is None:
+        return None
+
+    sections = parse_input_file(ini)
+    cfg = DomainConfig(sections, ini)
+
+    geometry = {ICASE_CHANNEL: 'channel', ICASE_PIPE: 'pipe',
+                ICASE_ANNULAR: 'annulus'}.get(cfg.icase, 'channel')
+    if cfg.icase == ICASE_OTHERS and get_entry(sections, 'domain', 'icase',
+                                               str, default='') == 'duct':
+        geometry = 'duct'
+
+    params = {
+        'source': ini,
+        'geometry': geometry,
+        'Re': cfg.ren or None,
+        'thermo_on': bool(cfg.is_thermo),
+        'mhd_on': bool(cfg.is_mhd),
+        'periodic': read_periodicity(ini),
+        'dt': cfg.dt or None,
+        'cells': list(cfg.nc),
+    }
+
+    ref_l0 = get_entry(sections, 'thermo', 'ref_l0', _to_float, default=None)
+    if ref_l0:
+        params['ref_length'] = ref_l0
+    if cfg.ref_t0:
+        params['ref_temp'] = cfg.ref_t0
+
+    # The toolkit only carries liquid-metal properties; say which fluid the
+    # case used either way, so a caller can explain itself.
+    params['ifluid_name'] = FLUID_NAMES.get(cfg.ifluid)
+    fluid = IFLUID_TO_TOOLKIT.get(cfg.ifluid)
+    if fluid:
+        params['working_fluid'] = fluid
+
+    gravity = [get_entry(sections, 'thermo', 'igravity', _to_float, index=i, default=None)
+               for i in range(3)]
+    if all(g is not None for g in gravity):
+        params['gravity_direction'] = gravity
+
+    field = [get_entry(sections, 'mhd', 'b_static', _to_float, index=i, default=None)
+             for i in range(3)]
+    if all(f is not None for f in field):
+        params['mag_field_direction'] = field
+
+    # The solver takes either a Hartmann or a Stuart number, whichever is
+    # flagged on. The toolkit works in Stuart, and N = Ha^2 / Re.
+    stuart_on = get_entry(sections, 'mhd', 'nstuart', _to_bool, index=0, default=False)
+    stuart = get_entry(sections, 'mhd', 'nstuart', _to_float, index=1, default=None)
+    hartmann_on = get_entry(sections, 'mhd', 'nhartmn', _to_bool, index=0, default=False)
+    hartmann = get_entry(sections, 'mhd', 'nhartmn', _to_float, index=1, default=None)
+    if stuart_on and stuart:
+        params['stuart_number'] = stuart
+    elif hartmann_on and hartmann and params.get('Re'):
+        params['stuart_number'] = hartmann ** 2 / params['Re']
+        params['hartmann_number'] = hartmann
+    return params
+
+
 def read_periodicity(path):
     """Which directions a case is periodic in, read from its input file.
 

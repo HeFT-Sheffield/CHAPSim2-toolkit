@@ -315,12 +315,32 @@ terms, heat transfer statistics, spectra and two-point correlations.
 
 Steps
 -----
-1. Choose the case. Case folder names and the latest timestep are filled
-   in, and the geometry is guessed from the case name.
-2. Set the bulk Reynolds number and, if relevant, the thermal and MHD
-   reference values.
+1. Choose the case. The case folder names, the latest timestep and
+   everything the run itself recorded are filled in - see "From the
+   case file" below.
+2. Check the values that came in, and set the few the input file does
+   not record: the bulk velocity and the wall heat flux.
 3. Tick the statistics you want.
 4. Run. Figures appear in the selector above the plot.
+
+From the case file
+------------------
+A case's input_chapsim.ini is the one authoritative record of how it was
+run, so these are read from it rather than typed in again:
+
+  Reynolds number, reference temperature and reference length
+  Geometry (from icase), and whether heat transfer and MHD were on
+  Working fluid, gravity direction, magnetic field direction
+  Stuart number - taken from NStuart, or derived as Ha^2/Re from NHartmn
+  Which directions are periodic, which sets the safe averaging defaults
+
+Anything you change by hand is kept. The point of reading the case is
+that a Reynolds number transcribed wrongly rescales every u_tau
+normalised profile with nothing on the plot to show for it.
+
+The bulk velocity and the wall heat flux are outcomes of the run rather
+than inputs to it, so they are not in the input file and still have to be
+given here. A case with no input_chapsim.ini leaves every box as it is.
 
 Input
 -----
