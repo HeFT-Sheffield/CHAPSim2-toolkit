@@ -337,3 +337,35 @@ def test_using_the_bulk_conductivity_changes_the_answer_substantially():
     k_bulk = water.thermal_conductivity(700.0)
     assert abs(k_bulk / k_ref - 1.0) > 0.5, \
         'the two conductivities should differ sharply here'
+
+
+# ---------------------------------------------------------------------------
+# The reference Reynolds number
+# ---------------------------------------------------------------------------
+
+def test_a_non_integer_reynolds_number_is_not_truncated():
+    """compute_u_tau_quantities opened with int(Re), so a Reynolds number
+    read from a case as 180.9 became 180 before every u_tau normalisation
+    in the toolkit. Small, but wrong and invisible."""
+    yc, u = _channel()
+    u_tau_exact, _, _ = op.compute_u_tau_quantities(u, 180.9, yc)
+    u_tau_floor, _, _ = op.compute_u_tau_quantities(u, 180.0, yc)
+    assert u_tau_exact != u_tau_floor
+    # 1/sqrt(Re) scaling, so the ratio is the square root of the ratio of Re
+    assert abs(u_tau_exact / u_tau_floor - np.sqrt(180.0 / 180.9)) < 1e-12
+
+
+def test_y_plus_is_not_truncated_either():
+    yc, u = _channel()
+    exact = op.norm_y_to_y_plus(yc, u, 180.9, yc)
+    floor = op.norm_y_to_y_plus(yc, u, 180.0, yc)
+    assert not np.allclose(exact, floor)
+
+
+def test_the_wall_shear_scales_as_one_over_the_reference_reynolds_number():
+    """tau_w = (1/Re) du/dy: the viscous term carries 1/ren, which is why
+    it is the reference Reynolds number and not the bulk one."""
+    yc, u = _channel()
+    a = op.compute_wall_shear_stress_from_velocity(u, 1000.0, y_coords=yc)
+    b = op.compute_wall_shear_stress_from_velocity(u, 2000.0, y_coords=yc)
+    assert abs(a / b - 2.0) < 1e-12

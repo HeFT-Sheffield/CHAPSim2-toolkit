@@ -220,7 +220,7 @@ def compute_reynolds_stresses(data, grid_info, x_crop=None):
     return results
 
 
-def compute_normalisation(ux_profile, y_coords, Re_bulk):
+def compute_normalisation(ux_profile, y_coords, Re_ref):
     """
     Compute wall shear stress and friction velocity for normalisation.
     """
@@ -233,16 +233,20 @@ def compute_normalisation(ux_profile, y_coords, Re_bulk):
         dy = 2.0 / len(ux_profile)  # Fallback assuming domain height of 2
 
     dudy = du / dy
-    tau_w = dudy / Re_bulk
+    # Re_ref is the number the solver non-dimensionalised with (ren in the
+    # input file), not the bulk Reynolds number - the viscous term carries
+    # 1/ren, so that is what sets the wall stress. The two coincide for a
+    # constant-mass-flux run and do not for a constant pressure gradient.
+    tau_w = dudy / Re_ref
     u_tau = np.sqrt(abs(tau_w))
     u_tau_sq = abs(tau_w)
 
-    Re_tau = u_tau * Re_bulk
+    Re_tau = u_tau * Re_ref
 
     return u_tau, u_tau_sq, Re_tau
 
 
-def normalise_results(results, y_coords, Re_bulk, ref_temp=None):
+def normalise_results(results, y_coords, Re_ref, ref_temp=None):
     """
     Normalise all results by friction velocity.
     """
@@ -251,7 +255,7 @@ def normalise_results(results, y_coords, Re_bulk, ref_temp=None):
         return results, None, None
 
     ux = results['ux_velocity']
-    u_tau, u_tau_sq, Re_tau = compute_normalisation(ux, y_coords, Re_bulk)
+    u_tau, u_tau_sq, Re_tau = compute_normalisation(ux, y_coords, Re_ref)
 
     print(f"u_tau = {u_tau:.6f}, u_tau^2 = {u_tau_sq:.6f}, Re_tau = {Re_tau:.2f}")
 

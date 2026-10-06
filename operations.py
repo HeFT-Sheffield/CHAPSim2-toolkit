@@ -398,8 +398,14 @@ def field_axes(field, average_x=False, average_z=False):
     return {'x': None, 'y': 0, 'z': None}
 
 
-def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None, wall=None):
+def compute_wall_shear_stress_from_velocity(ux_data, Re_ref, y_coords=None, wall=None):
     """Compute wall shear stress from near-wall interpolated velocity points.
+
+    ``Re_ref`` is the Reynolds number the solver non-dimensionalised with -
+    ``ren`` in the input file, which is what makes the viscous term carry
+    1/Re. It is read from the case, so it is the right one by
+    construction; the argument used to be called Re_bulk, which is a
+    different number for a constant-pressure-gradient run.
 
     ``wall`` selects which end to differentiate at; None detects it with
     wall_side(), which keeps 'lower' for channels and annuli and picks the
@@ -428,7 +434,7 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None, wal
     u_wall = interpolate_wall_point(ux_data, y_coords=y_coords, wall=wall)
     dy_wall_to_first_cell = 0.5 * dy01
     du_dy_wall = (u0 - u_wall) / dy_wall_to_first_cell
-    mu = 1.0 / float(Re_bulk)
+    mu = 1.0 / float(Re_ref)
     return mu * du_dy_wall
 
 # =====================================================================================================================================================
@@ -1091,23 +1097,29 @@ def dimensionalize_temperature(temp_data, ref_temp, norm_temp_by_ref_temp):
         return temp_arr
     return temp_arr * float(ref_temp)
 
-def norm_turb_stat_wrt_u_tau_sq(ux_data, turb_stat, Re_bulk, y_coords=None):
-    _, u_tau_sq, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
+def norm_turb_stat_wrt_u_tau_sq(ux_data, turb_stat, Re_ref, y_coords=None):
+    _, u_tau_sq, _ = compute_u_tau_quantities(ux_data, Re_ref, y_coords)
     return np.divide(np.asarray(turb_stat), u_tau_sq)
 
-def norm_ux_velocity_wrt_u_tau(ux_data, Re_bulk, y_coords=None):
-    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
+def norm_ux_velocity_wrt_u_tau(ux_data, Re_ref, y_coords=None):
+    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_ref, y_coords)
     profile = ux_data if y_coords is not None else ux_data[:, 2]
     return np.divide(np.asarray(profile), u_tau)
 
-def compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
+def compute_u_tau_quantities(ux_data, Re_ref, y_coords=None):
     """Compute wall shear stress quantities from near-wall velocity data.
+
+    Re_ref is the solver's ``ren``, the number the equations are
+    non-dimensionalised with - not the bulk Reynolds number, which is a
+    different value for a constant-pressure-gradient run.
 
     For nD native arrays the wall gradient is computed from the first two
     y-indices (axis 0) and then averaged over any remaining axes so that
     u_tau is a single scalar.
     """
-    Re_bulk = int(Re_bulk)
+    # Was int(), which truncated a non-integer Reynolds number before
+    # every u_tau normalisation in the toolkit.
+    Re_ref = float(Re_ref)
     if y_coords is not None:
         # Native array: axis-0 is y.  ux_data[0], ux_data[1] may be 1-D (nx,) or scalar
         du = ux_data[0] - ux_data[1]
@@ -1118,15 +1130,16 @@ def compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
     dudy = du / dy
     # Average over any spatial dims so u_tau is always a scalar
     dudy = np.mean(dudy)
-    tau_w = dudy / Re_bulk
+    tau_w = dudy / Re_ref
     u_tau_sq = abs(tau_w)
     u_tau = np.sqrt(u_tau_sq)
     return u_tau, u_tau_sq, tau_w
 
-def norm_y_to_y_plus(y, ux_data, Re_bulk, y_coords=None):
-    Re_bulk = int(Re_bulk)
-    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
-    return y * u_tau * Re_bulk
+def norm_y_to_y_plus(y, ux_data, Re_ref, y_coords=None):
+    """y+ = y u_tau Re_ref, with Re_ref the solver's ``ren``."""
+    Re_ref = float(Re_ref)      # was int(), truncating a non-integer Re
+    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_ref, y_coords)
+    return y * u_tau * Re_ref
 
 def symmetric_average(arr, axis=0):
     """Average the first and second halves of the domain along `axis`.
@@ -1189,8 +1202,8 @@ def window_average(data_t1, data_t2, t1, t2, stat_start_timestep):
     else:
         return (stat_t2 * data_t2 - stat_t1 * data_t1) / t_diff
 
-def analytical_laminar_mhd_prof(case, Re_bulk, Re_tau):
-    u_tau = Re_tau / Re_bulk
+def analytical_laminar_mhd_prof(case, Re_ref, Re_tau):
+    u_tau = Re_tau / Re_ref
     y = np.linspace(0, 1, 100) * Re_tau
     prof = (((Re_tau * u_tau)/(case * np.tanh(case)))*((1 - np.cosh(case * (1 - y)))/np.cosh(case)) + 1.225)
     return prof

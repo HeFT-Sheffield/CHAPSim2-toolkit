@@ -29,7 +29,9 @@ average_z_direction = True # set False for duct flows, and for tsp_avg input (al
 forcing = 'CMF' # 'CMF' or 'CPG', constant mass flux or pressure gradient.
 # None means 'read it from the case's input_chapsim.ini', which is where the solver
 # recorded it. Set a value only to override, and the toolkit will say if it disagrees.
-Re = None # e.g. [5000]; one per case if they differ. Use the bulk value for CPG.
+Re = None # e.g. [5000]; one per case if they differ. This is the solver's own
+          # 'ren', the number the equations are non-dimensionalised with, so it
+          # is read from the case and is the right one whatever the forcing.
 
 # Thermo/ Variable Properties
 thermo_on = None # from the case's ithermo. The reference values below are only used when it is on.

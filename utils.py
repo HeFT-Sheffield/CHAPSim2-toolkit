@@ -1680,8 +1680,12 @@ def get_col(case, cases, colours):
     return colour
 
 def print_flow_info(ux_data, Re_ref, Re_bulk, case, timestep, y_coords=None):
+    """Print the wall quantities for one case and timestep.
 
-    Re_ref = int(Re_ref)
+    Re_ref is the number the solver non-dimensionalised with; Re_bulk is
+    reported alongside but takes no part in the arithmetic.
+    """
+    Re_ref = float(Re_ref)      # was int(), which truncated a non-integer Re
     if y_coords is not None:
         du = ux_data[0] - ux_data[1]
         dy = y_coords[0] - y_coords[1]
@@ -1689,7 +1693,7 @@ def print_flow_info(ux_data, Re_ref, Re_bulk, case, timestep, y_coords=None):
         du = ux_data[0, 2] - ux_data[1, 2]
         dy = ux_data[0, 1] - ux_data[1, 1]
     dudy = np.mean(du/dy)  # average over any spatial dims for scalar output
-    tau_w = dudy/Re_ref # this should be ref Re not real bulk Re
+    tau_w = dudy/Re_ref
     u_tau = np.sqrt(abs(dudy/Re_ref))
     Re_tau = u_tau * Re_ref
     print(f'Case: {case}, Timestep: {timestep}')
