@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 __all__ = ['skip', 'Skip', 'SKIP_EXCEPTIONS', 'solver_tests_dir',
            'build_cartesian_case', 'build_cylindrical_case',
-           'write_monitor_files', 'gui_root', 'gui_app']
+           'write_monitor_files', 'require_gui', 'gui_root', 'gui_app']
 
 
 class Skip(Exception):
@@ -388,7 +388,7 @@ def write_monitor_files(case_dir, thermo=True, nrows=6):
 # Standing a GUI up in a test
 # ---------------------------------------------------------------------------
 
-def _require_gui():
+def require_gui():
     """Skip unless the GUI's dependencies and a usable display are present.
 
     ``import gui`` succeeds without a display - it is Tk that needs one -
@@ -432,7 +432,7 @@ def _reset_tk_globals():
 @contextlib.contextmanager
 def gui_root():
     """A hidden Tk root to parent a single tab, destroyed afterwards."""
-    _require_gui()
+    require_gui()
     import tkinter as tk
     _reset_tk_globals()
     root = tk.Tk()
@@ -454,7 +454,7 @@ def gui_app():
     exists, so the close handler is the only correct way out - and tearing
     down this way is also what exercises it.
     """
-    _require_gui()
+    require_gui()
     import gui
     _reset_tk_globals()
     try:

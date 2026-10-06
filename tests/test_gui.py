@@ -19,8 +19,20 @@ import contextlib
 import os
 import tempfile
 
-from _harness import (skip, gui_root, gui_app, solver_tests_dir,
-                      build_cartesian_case)
+from _harness import (skip, require_gui, gui_root, gui_app,
+                      solver_tests_dir, build_cartesian_case)
+
+
+def _gui():
+    """The gui module, or a skip.
+
+    Importing it is itself the thing that fails when ttkbootstrap is
+    missing, so the check has to come first - otherwise a Python without
+    the dependency reports an error where it should report a skip.
+    """
+    require_gui()
+    import gui
+    return gui
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +130,7 @@ def test_applying_a_case_reaches_every_tab_without_complaint():
 # ---------------------------------------------------------------------------
 
 def test_the_stats_tab_fills_itself_from_the_case_input_file():
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)
     with _tab(gui.TurbStatsTab) as tab:
         tab.adopt_case(case)
@@ -132,7 +144,7 @@ def test_the_stats_tab_fills_itself_from_the_case_input_file():
 
 def test_a_hartmann_number_reaches_the_tab_as_the_stuart_number():
     """Ha = 10 at Re = 5000 is N = 0.02. Nobody should work that out by hand."""
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)
     with _tab(gui.TurbStatsTab) as tab:
         tab.adopt_case(case)
@@ -143,7 +155,7 @@ def test_a_hartmann_number_reaches_the_tab_as_the_stuart_number():
 
 def test_averaging_is_never_switched_on_for_a_direction_with_an_inlet():
     """Averaging x on an inlet/outlet case folds the two ends together."""
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)          # inout: x is not periodic
     with _tab(gui.TurbStatsTab) as tab:
         tab.adopt_case(case)
@@ -151,7 +163,7 @@ def test_averaging_is_never_switched_on_for_a_direction_with_an_inlet():
 
 
 def test_a_case_with_no_input_file_leaves_the_controls_alone():
-    import gui
+    gui = _gui()
     with tempfile.TemporaryDirectory() as tmp:
         case = os.path.join(tmp, 'bare')
         build_cartesian_case(case)
@@ -162,7 +174,7 @@ def test_a_case_with_no_input_file_leaves_the_controls_alone():
 
 
 def test_the_widgets_build_a_config_the_post_processing_accepts():
-    import gui
+    gui = _gui()
     import turb_stats as ts
     case = _solver_case(MHD_CASE)
     with _tab(gui.TurbStatsTab) as tab:
@@ -185,7 +197,7 @@ def _dialogs_answer(path):
     box is how this code reports a failure - a test that ignored them would
     pass while the GUI was telling the user it had not worked.
     """
-    import gui
+    gui = _gui()
     files = {name: getattr(gui.filedialog, name)
              for name in ('asksaveasfilename', 'askopenfilename')}
     boxen = {name: getattr(gui.messagebox, name)
@@ -218,7 +230,7 @@ def test_settings_survive_a_round_trip_through_a_config_file():
     has to put the same values on screen - otherwise the two halves of the
     toolkit disagree about a case and neither says so.
     """
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)
     with _tab(gui.TurbStatsTab) as tab:
         tab.adopt_case(case)
@@ -248,7 +260,7 @@ def test_settings_survive_a_round_trip_through_a_config_file():
 
 
 def test_the_config_it_writes_is_one_turb_stats_can_read():
-    import gui
+    gui = _gui()
     import turb_stats as ts
     import importlib.util
     case = _solver_case(MHD_CASE)
@@ -272,7 +284,7 @@ def test_the_config_it_writes_is_one_turb_stats_can_read():
 # ---------------------------------------------------------------------------
 
 def test_the_slice_tab_finds_the_timesteps_in_a_case():
-    import gui
+    gui = _gui()
     import utils as ut
     case = _solver_case(MHD_CASE)
     with _tab(gui.SliceTab) as tab:
@@ -283,7 +295,7 @@ def test_the_slice_tab_finds_the_timesteps_in_a_case():
 
 
 def test_the_slice_tab_on_an_empty_folder_offers_nothing_rather_than_stale():
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)
     with _tab(gui.SliceTab) as tab:
         tab.adopt_case(case)
@@ -294,7 +306,7 @@ def test_the_slice_tab_on_an_empty_folder_offers_nothing_rather_than_stale():
 
 
 def test_the_3d_tab_finds_the_timesteps_in_a_case():
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)
     with _tab(gui.TurbVisuTab) as tab:
         tab.adopt_case(case)
@@ -303,7 +315,7 @@ def test_the_3d_tab_finds_the_timesteps_in_a_case():
 
 def test_the_monitor_tab_takes_the_case_folder_not_the_monitor_folder():
     """_run resolves 3_monitor underneath, so the case itself is what it wants."""
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)
     with _tab(gui.MonitorPointsTab) as tab:
         tab.adopt_case(case)
@@ -315,7 +327,7 @@ def test_the_monitor_tab_takes_the_case_folder_not_the_monitor_folder():
 # ---------------------------------------------------------------------------
 
 def test_the_mesh_tab_loads_the_cases_input_file():
-    import gui
+    gui = _gui()
     case = _solver_case(MHD_CASE)
     with _tab(gui.MeshAnalysisTab) as tab:
         tab.adopt_case(case)
@@ -324,7 +336,7 @@ def test_the_mesh_tab_loads_the_cases_input_file():
 
 
 def test_the_mesh_tab_ignores_a_case_with_no_input_file():
-    import gui
+    gui = _gui()
     with tempfile.TemporaryDirectory() as tmp:
         with _tab(gui.MeshAnalysisTab) as tab:
             before = tab._path.get()
@@ -337,7 +349,7 @@ def test_the_mesh_tab_ignores_a_case_with_no_input_file():
 # ---------------------------------------------------------------------------
 
 def test_every_help_topic_renders():
-    import gui
+    gui = _gui()
     import help_content
     with _tab(gui.HelpTab) as tab:
         for index, (title, _) in enumerate(help_content.TOPICS):
@@ -348,7 +360,7 @@ def test_every_help_topic_renders():
 
 def test_a_help_topic_can_be_opened_by_name():
     """The list title and the body heading differ, so match on the body."""
-    import gui
+    gui = _gui()
     import help_content
     wanted = dict(help_content.TOPICS)['Troubleshooting']
     with _tab(gui.HelpTab) as tab:
@@ -359,7 +371,7 @@ def test_a_help_topic_can_be_opened_by_name():
 
 
 def test_asking_for_a_topic_that_is_not_there_does_not_raise():
-    import gui
+    gui = _gui()
     with _tab(gui.HelpTab) as tab:
         tab.show_topic('No such topic')
 
@@ -369,7 +381,7 @@ def test_asking_for_a_topic_that_is_not_there_does_not_raise():
 # ---------------------------------------------------------------------------
 
 def test_the_metric_strip_shows_and_clears_values():
-    import gui
+    gui = _gui()
     with gui_root() as root:
         import tkinter as tk
         strip = gui.MetricStrip(tk.Frame(root), [('re_tau', 'Re_tau'),
