@@ -123,6 +123,33 @@ def test_the_gui_extra_carries_the_ttkbootstrap_floor():
 
 
 # ---------------------------------------------------------------------------
+# Changelog
+# ---------------------------------------------------------------------------
+
+def test_the_changelog_has_an_entry_for_the_current_version():
+    """A release whose changes are not written down is one nobody can
+    decide whether to upgrade to."""
+    text = _read('CHANGELOG.md')
+    version = chapsim2_toolkit.__version__
+    assert re.search(r'^## \[' + re.escape(version) + r'\]', text, re.M), \
+        f'CHANGELOG.md has no section for {version}'
+
+
+def test_the_changelog_keeps_an_unreleased_section():
+    """Somewhere to write the next change down as it is made, rather than
+    reconstructing it from git at release time."""
+    text = _read('CHANGELOG.md')
+    assert re.search(r'^## \[Unreleased\]', text, re.M)
+
+
+def test_behaviour_changes_are_marked_as_such():
+    """The entries that change a number somebody may have published are
+    the ones that have to stand out."""
+    text = _read('CHANGELOG.md')
+    assert 'behaviour change' in text
+
+
+# ---------------------------------------------------------------------------
 # What must ship
 # ---------------------------------------------------------------------------
 

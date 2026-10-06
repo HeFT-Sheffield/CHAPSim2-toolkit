@@ -39,6 +39,14 @@ jobs:
       - name: Install a virtual display for the GUI tests
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
+      - name: Install pyvista for the 3D tests
+        # Only on the newest job: pyvista pulls in VTK, which is a large
+        # download, and the 3D code has no version-specific behaviour to
+        # exercise twice. It renders off-screen through software GL, so it
+        # needs no display of its own.
+        if: matrix.python-version == '3.12'
+        run: pip install "pyvista>=0.32.0"
+
       - name: Report the versions actually under test
         run: python -c "import numpy, matplotlib; print('numpy', numpy.__version__, '| matplotlib', matplotlib.__version__)"
 

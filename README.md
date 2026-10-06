@@ -201,6 +201,14 @@ regenerated from that revision alone.
 
 **thermal_BC_calc.py**: Convert a Grashof number to a wall temperature difference or heat flux, and tabulate any fluid's properties in the format CHAPSim2 reads — the same eight SI columns as a `NIST_*.DAT`, so the file it writes can be handed back to the solver as a table-based fluid.
 
+## Changes:
+
+`CHANGELOG.md` records what changed between versions. Entries marked
+**behaviour change** alter a number you may already have published — the
+Nusselt number, the wall shear on a pipe, the fluid properties and the
+Reynolds number truncation all changed in 0.2.0, some of them substantially.
+Read those before regenerating a figure made with an earlier version.
+
 ## Tests:
 
 ```bash
