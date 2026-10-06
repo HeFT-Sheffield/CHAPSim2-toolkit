@@ -369,3 +369,52 @@ def test_the_wall_shear_scales_as_one_over_the_reference_reynolds_number():
     a = op.compute_wall_shear_stress_from_velocity(u, 1000.0, y_coords=yc)
     b = op.compute_wall_shear_stress_from_velocity(u, 2000.0, y_coords=yc)
     assert abs(a / b - 2.0) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# Axis labels
+# ---------------------------------------------------------------------------
+#
+# Found on a production case: a Reynolds-stress plot was labelled
+# <u'u'>/U_bulk^2/u_tau^2. The data was normalised by u_tau^2 alone - the
+# peak was the textbook 7.3, not 6.1 - so the label claimed a
+# normalisation that had not been applied, on a figure headed for a paper.
+
+def test_a_stress_normalised_by_u_tau_squared_says_only_that():
+    plotter = _plotter()
+    label = plotter._get_stat_ylabel('u_prime_sq', "<u'u'>")
+    assert 'u_\\tau^2' in label
+    assert 'U_{ref}' not in label and 'U_{bulk}' not in label, \
+        f'label claims two normalisations: {label}'
+
+
+def test_every_stress_label_carries_one_denominator():
+    plotter = _plotter()
+    for name in ('u_prime_sq', 'v_prime_sq', 'w_prime_sq',
+                 'u_prime_v_prime', 'TKE'):
+        label = plotter._get_stat_ylabel(name, name)
+        assert label.count('/') == 1, f'{name}: {label}'
+
+
+def test_without_u_tau_normalisation_the_reference_velocity_is_named():
+    """The solver non-dimensionalises by the reference velocity, not the
+    bulk; those differ for anything but a constant-mass-flux run."""
+    plotter = _plotter(norm_by_u_tau_sq=False)
+    label = plotter._get_stat_ylabel('u_prime_sq', "<u'u'>")
+    assert 'U_{ref}' in label
+    assert 'u_\\tau' not in label
+
+
+def test_the_mean_velocity_label_switches_rather_than_accumulates():
+    assert '/u_\\tau$' in _plotter(norm_ux_by_u_tau=True)._get_stat_ylabel(
+        'ux_velocity', 'Ux')
+    assert 'U_{ref}' in _plotter(norm_ux_by_u_tau=False)._get_stat_ylabel(
+        'ux_velocity', 'Ux')
+
+
+def test_quantities_that_are_not_scaled_keep_their_own_label():
+    """Pr_t and Nu are dimensionless already; dividing their label by
+    u_tau^2 was a bug fixed earlier and must not come back."""
+    plotter = _plotter()
+    for name in ('turb_prandtl', 'nusselt_number'):
+        assert 'u_\\tau' not in plotter._get_stat_ylabel(name, name)

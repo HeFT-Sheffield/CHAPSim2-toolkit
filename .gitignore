@@ -34,3 +34,5 @@ turb_stats_plots/
 dist/
 build/
 *.egg-info/
+
+.scratch/

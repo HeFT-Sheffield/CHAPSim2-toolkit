@@ -12,6 +12,7 @@ import matplotlib.colors as mcolors
 from matplotlib.figure import Figure
 import math
 import os
+import re
 from tqdm import tqdm
 
 mpl.rcParams.update({
@@ -3094,20 +3095,24 @@ class TurbulencePlotter:
 
     def _get_stat_ylabel(self, stat_name: str, stat_label: str) -> str:
         """Return y-axis label matching enabled normalisation options."""
+        # The solver non-dimensionalises by its reference velocity, the one
+        # that defines ren - not by the bulk velocity, which is a different
+        # number for anything but a constant-mass-flux run. These labels
+        # said U_bulk, which is the same confusion that was in the code.
         base_labels = {
-            'ux_velocity': '$U_x/U_{bulk}$',
-            'uy_velocity': '$U_y/U_{bulk}$',
-            'uz_velocity': '$U_z/U_{bulk}$',
+            'ux_velocity': '$U_x/U_{ref}$',
+            'uy_velocity': '$U_y/U_{ref}$',
+            'uz_velocity': '$U_z/U_{ref}$',
             'temperature': '$T$',
             'heat_transfer_coeff': '$h$ (W/(m^2K))',
             'nusselt_number': '$Nu$',
             'turb_prandtl': '$Pr_t$',
-            'TKE': '$k/U_{bulk}^2$',
-            'u_prime_sq': "$\\langle u'u' \\rangle/U_{bulk}^2$",
-            'u_prime_v_prime': "$\\langle u'v' \\rangle/U_{bulk}^2$",
-            'v_prime_sq': "$\\langle v'v' \\rangle/U_{bulk}^2$",
-            'v_prime_w_prime': "$\\langle v'w' \\rangle/U_{bulk}^2$",
-            'w_prime_sq': "$\\langle w'w' \\rangle/U_{bulk}^2$",
+            'TKE': '$k/U_{ref}^2$',
+            'u_prime_sq': "$\\langle u'u' \\rangle/U_{ref}^2$",
+            'u_prime_v_prime': "$\\langle u'v' \\rangle/U_{ref}^2$",
+            'v_prime_sq': "$\\langle v'v' \\rangle/U_{ref}^2$",
+            'v_prime_w_prime': "$\\langle v'w' \\rangle/U_{ref}^2$",
+            'w_prime_sq': "$\\langle w'w' \\rangle/U_{ref}^2$",
         }
         base = base_labels.get(stat_name, stat_label)
 
@@ -3119,8 +3124,13 @@ class TurbulencePlotter:
 
         if (self.config.norm_by_u_tau_sq
                 and stat_name not in NOT_NORMALISED_BY_U_TAU_SQ):
+            # Replace the reference-velocity denominator rather than append
+            # to it. Appending read as a double normalisation that was not
+            # being applied: a plot labelled u'u'/U_ref^2/u_tau^2 was in
+            # fact u'u'/u_tau^2, and the label said otherwise.
             if isinstance(base, str) and base.startswith('$') and base.endswith('$'):
-                return base[:-1] + '/u_\\tau^2$'
+                stripped = re.sub(r'/U_\{ref\}\^2(?=\$)', '', base)
+                return stripped[:-1] + '/u_\\tau^2$'
             return f'{base} / $u_\\tau^2$'
 
         return base
