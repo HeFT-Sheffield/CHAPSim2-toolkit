@@ -22,14 +22,23 @@ setup(
         "Original repository": "https://github.com/AlexOld1/CHAPSim2_python_toolkit",
         "CHAPSim2 solver": "https://github.com/CHAPSim/CHAPSim2",
     },
-    # NOTE: the modules sit at the top level with no __init__.py, so
+    # The modules sit at the top level with no __init__.py, so
     # find_packages() returns nothing and an install places only metadata.
-    # The toolkit is therefore run from a checkout; `pip install .[gui,3d]`
-    # is useful for pulling in the dependencies. Making it importable after
-    # an install means either listing every module in py_modules - which
-    # would put names as generic as `utils`, `config` and `slice` on the
-    # global import path - or moving them under a package directory. The
-    # second is the right answer and is not a packaging-file change.
+    # The toolkit is run from a checkout; this file exists to pull in the
+    # dependencies, `pip install .[gui,3d]`, and for nothing else.
+    #
+    # Making it importable after an install means either listing every
+    # module in py_modules - which would put names as generic as `utils`,
+    # `config` and `slice` on the global import path, to collide with
+    # whatever else is in the environment - or moving them under a package
+    # directory. The second is the right answer; it rewrites 77 imports
+    # across 25 files and changes `python gui.py` into a console script,
+    # so it is a deliberate change and not a packaging-file tweak.
+    #
+    # Until then nothing here may promise an importable package. An entry
+    # point did, and `chapsim2-turbstats` installed onto the PATH and then
+    # died with ModuleNotFoundError - a working-looking install that was
+    # not one. Better to install only metadata and say so.
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -69,17 +78,9 @@ setup(
             "flake8>=3.9",
         ],
     },
-    entry_points={
-        "console_scripts": [
-            "chapsim2-turbstats=turb_stats:main",
-        ],
-    },
-    include_package_data=True,
-    package_data={
-        # Includes Reference_Data/thermal_properties/, the NIST tables for
-        # supercritical water and CO2 that fluid_properties falls back on
-        # when a case folder has no copy of its own.
-        "": ["Reference_Data/**/*"],
-    },
+    # No console_scripts and no package_data: both attach to a package
+    # that does not exist, so the first shipped a broken command and the
+    # second shipped nothing. They come back with the package directory,
+    # together with the Reference_Data tables they are meant to carry.
     zip_safe=False,
 )

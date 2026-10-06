@@ -7,8 +7,9 @@ A python post-processing and toolkit program based on NumPy and Matplotlib for D
 ## Install:
 
 The toolkit is run from a checkout — the modules sit at the top level, so an
-install places only metadata and does not put them on the import path. What you
-need is the dependencies:
+install places only metadata and does not put them on the import path. There is
+no `chapsim2-*` command and nothing becomes importable; `setup.py` exists to
+pull in the dependencies and for nothing else. What you need is those:
 
 ```bash
 pip install -r requirements.txt          # everything, including the GUI and 3D
