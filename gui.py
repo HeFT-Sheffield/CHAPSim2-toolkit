@@ -634,7 +634,8 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
         self._t_wall_hf = trow(s, ' Wall heat flux (W/m²)', height=2)
         self._t_wall_hf.insert('1.0', '0.0')
         working_fluid_row = crow(s, ' Working fluid', sv('working_fluid', 'lithium'),
-             ['lithium', 'sodium', 'lead', 'bismuth', 'lbe', 'flibe', 'pbli'])
+             ['scp_water', 'scp_co2', 'lithium', 'sodium', 'lead', 'bismuth',
+              'lbe', 'flibe', 'pbli'])
         self._t_gravity_dir = trow(s, ' Gravity direction (x,y,z)', height=2)
         self._t_gravity_dir.insert('1.0', '0, -1, 0')
         mhd_toggle = chk(s, ' MHD statistics', bv('mhd_on', False), bootstyle='round-toggle')
@@ -869,6 +870,10 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
             self._log(f"{name} was run with {params.get('ifluid_name')}, which the "
                       f"toolkit has no property data for; the working fluid is "
                       f"left as it was.")
+        elif params.get('working_fluid') in ('scp_water', 'scp_co2'):
+            self._log(f"{name}: properties come from the NIST table for "
+                      f"{params.get('ifluid_name')}, read from the case folder "
+                      f"if it has one.")
 
         # Averaging follows the case's periodicity. Averaging a direction
         # that is not periodic folds the two ends of the domain together,

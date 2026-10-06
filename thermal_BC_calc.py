@@ -11,13 +11,6 @@ Functions for generating property tables or temp. difference from Grahsof number
 """
 
 from utils import (
-    LiquidLithiumProperties,
-    LiquidPbLiProperties,
-    LiquidSodiumProperties,
-    LiquidLeadProperties,
-    LiquidBismuthProperties,
-    LiquidLBEProperties,
-    LiquidFLiBeProperties,
     get_fluid_properties,
 )
 
@@ -49,7 +42,7 @@ def generate_property_table(T_min, T_max, T_ref, pressure=0.1, n_points=20,
         Property table with requested columns
     """
     
-    li = LiquidLithiumProperties()
+    li = get_fluid_properties('lithium')
     
     # Check validity
     if T_min < li.T_melt:
@@ -179,31 +172,24 @@ def get_prandtl(temp, fluid):
     temp : float
         Temperature in K
     fluid : object
-        Fluid properties object (LiquidLithiumProperties or LiquidPbLiProperties)
+        Fluid properties object from get_fluid_properties().
 
     Returns:
     --------
     float
         Prandtl number (dimensionless)
     """
-    if isinstance(fluid, LiquidLithiumProperties):
-        mu = fluid.viscosity(temp) * 1e-6  # Convert from µPa·s to Pa·s
-    else:
-        mu = fluid.viscosity(temp)  # Already in Pa·s
-    k = fluid.thermal_conductivity(temp)
-    c_p = fluid.heat_capacity_p(temp)
-    Pr = (c_p * mu) / k
-
-    return Pr
+    # Every fluid now reports viscosity in Pa s. It did not used to: the
+    # lithium class alone returned micro Pa s, and this function corrected
+    # for it by type, so anything else that called viscosity() on lithium
+    # was out by a factor of a million.
+    return fluid.prandtl(temp)
 
 def get_viscosity_Pa_s(fluid, T):
     """
     Get viscosity in Pa·s for any fluid type.
     """
-    if isinstance(fluid, LiquidLithiumProperties):
-        return fluid.viscosity(T) * 1e-6  # Convert from µPa·s to Pa·s
-    else:
-        return fluid.viscosity(T)  # Already in Pa·s
+    return fluid.viscosity(T)
 
 def generate_normalized_property_table(fluid, T_ref, delta_T, n_points=20):
     """
@@ -296,14 +282,18 @@ def plot_normalized_properties(df, fluid_name='Fluid', save_fig=False, filename=
 
     return fig
 
+#: Keyed on the fluid's own name, so a property object identifies itself
+#: without the caller having to know which class it is.
 FLUID_NAMES = {
-    LiquidLithiumProperties: "Liquid Lithium (Li)",
-    LiquidSodiumProperties: "Liquid Sodium (Na)",
-    LiquidLeadProperties: "Liquid Lead (Pb)",
-    LiquidBismuthProperties: "Liquid Bismuth (Bi)",
-    LiquidLBEProperties: "Liquid Lead-Bismuth Eutectic (LBE)",
-    LiquidFLiBeProperties: "Liquid FLiBe (2LiF-BeF2)",
-    LiquidPbLiProperties: "Liquid Lead-Lithium Eutectic (Pb-83Li-17)",
+    'lithium': "Liquid Lithium (Li)",
+    'sodium': "Liquid Sodium (Na)",
+    'lead': "Liquid Lead (Pb)",
+    'bismuth': "Liquid Bismuth (Bi)",
+    'lbe': "Liquid Lead-Bismuth Eutectic (LBE)",
+    'flibe': "Liquid FLiBe (2LiF-BeF2)",
+    'pbli': "Liquid Lead-Lithium Eutectic (Pb-83Li-17)",
+    'scp_water': "Supercritical Water (23.5 MPa)",
+    'scp_co2': "Supercritical CO2 (8 MPa)",
 }
 
 
@@ -398,7 +388,7 @@ def interactive_calculation():
     alpha = k / (rho * cp)  # thermal diffusivity for display
 
     # Print results
-    medium_name = FLUID_NAMES.get(type(fluid), "Unknown Fluid")
+    medium_name = FLUID_NAMES.get(fluid.name, "Unknown Fluid")
 
     print("\n" + "=" * 70)
     print(f"  Results for {medium_name}")
@@ -430,7 +420,7 @@ def interactive_calculation():
     map_input = input("Map normalised property variation over this temperature "
                        "difference? (y/n): ").strip().lower()
     if map_input == 'y':
-        medium_name = FLUID_NAMES.get(type(fluid), "Unknown Fluid")
+        medium_name = FLUID_NAMES.get(fluid.name, "Unknown Fluid")
         prop_df = generate_normalized_property_table(fluid, T_ref, delta_T)
         print(f"\n{prop_df.to_string(index=False)}\n")
         plot_normalized_properties(prop_df, fluid_name=medium_name)

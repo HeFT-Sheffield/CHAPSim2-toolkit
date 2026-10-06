@@ -341,8 +341,20 @@ def test_the_geometry_comes_from_icase_not_the_folder_name():
     assert _case_parameters(icase='annular')['geometry'] == 'annulus'
 
 
-def test_a_fluid_the_toolkit_has_no_properties_for_is_named_not_guessed():
+def test_a_supercritical_fluid_maps_to_its_nist_table():
+    """These used to map to nothing, because the toolkit carried only the
+    liquid-metal correlations. They are now read from the same NIST tables
+    the solver reads."""
     params = _case_parameters(ifluid='scp_water')
+    assert params['working_fluid'] == 'scp_water'
+    assert params['ifluid_name'] and 'water' in params['ifluid_name'].lower()
+    assert _case_parameters(ifluid='scp_co2')['working_fluid'] == 'scp_co2'
+
+
+def test_a_fluid_the_toolkit_has_no_properties_for_is_named_not_guessed():
+    """Plain water is the one fluid left with no property model - the
+    solver has none for it either."""
+    params = _case_parameters(ifluid='water')
     assert 'working_fluid' not in params
     assert params['ifluid_name'] and 'water' in params['ifluid_name'].lower()
 

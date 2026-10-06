@@ -35,6 +35,11 @@ ICASE_OTHERS = 0
 ICASE_CHANNEL = 1
 ICASE_PIPE = 2
 ICASE_ANNULAR = 3
+ICASE_TGV3D = 4
+ICASE_DUCT = 5
+ICASE_TGV2D = 6
+ICASE_BURGERS = 7
+ICASE_ALGTEST = 8
 
 ICARTESIAN = 1
 ICYLINDRICAL = 2
@@ -57,12 +62,15 @@ ISTRET_NAMES = {0: 'uniform', 1: 'centre clustered', 2: 'two-side clustered',
 MSTRET_NAMES = {0: 'uniform', 1: '3-parameter function (Leizet2009JCP)',
                 2: 'hyperbolic tangent', 3: 'power law'}
 
-# ifluid index -> medium name understood by utils.get_fluid_properties.
-# Supercritical water/CO2 (1, 2) have no property class in the toolkit.
+# ifluid index -> medium name understood by fluid_properties.
 FLUID_NAMES = {1: 'supercritical water', 2: 'supercritical CO2', 3: 'sodium',
                4: 'lead', 5: 'bismuth', 6: 'LBE', 7: 'water', 8: 'lithium',
                9: 'FLiBe', 10: 'PbLi'}
-FLUID_TOOLKIT_KEYS = {3: 'sodium', 4: 'lead', 5: 'bismuth', 6: 'lbe',
+# Supercritical water and CO2 are the NIST-table fluids; the rest are the
+# correlation fluids. Plain water (7) is the only one with no properties -
+# the solver has no correlations for it either.
+FLUID_TOOLKIT_KEYS = {1: 'scp_water', 2: 'scp_co2', 3: 'sodium',
+                      4: 'lead', 5: 'bismuth', 6: 'lbe',
                       8: 'lithium', 9: 'flibe', 10: 'pbli'}
 
 # ====================================================================================================================================================
@@ -87,11 +95,11 @@ ICASE_TOKENS = {
     'channel': ICASE_CHANNEL, '1': ICASE_CHANNEL,
     'pipe': ICASE_PIPE, '2': ICASE_PIPE,
     'annular': ICASE_ANNULAR, '3': ICASE_ANNULAR,
-    'tgv3d': 4, '4': 4,
-    'duct': 5, '5': 5,
-    'tgv2d': 6, '6': 6,
-    'burgers': 7, '7': 7,
-    'algtest': 8, '8': 8,
+    'tgv3d': ICASE_TGV3D, '4': ICASE_TGV3D,
+    'duct': ICASE_DUCT, '5': ICASE_DUCT,
+    'tgv2d': ICASE_TGV2D, '6': ICASE_TGV2D,
+    'burgers': ICASE_BURGERS, '7': ICASE_BURGERS,
+    'algtest': ICASE_ALGTEST, '8': ICASE_ALGTEST,
     'others': ICASE_OTHERS, '0': ICASE_OTHERS,
 }
 
@@ -239,9 +247,9 @@ def _to_bool(token):
 IBC_PERIODIC = 1
 
 
-#: CHAPSim2 ifluid index -> the key utils.get_fluid_properties understands.
-#: The supercritical fluids and plain water have no property class in the
-#: toolkit, so they map to nothing rather than to a plausible wrong fluid.
+#: CHAPSim2 ifluid index -> the key fluid_properties understands. Plain
+#: water (7) maps to nothing rather than to a plausible wrong fluid; the
+#: solver has no property model for it either.
 IFLUID_TO_TOOLKIT = dict(FLUID_TOOLKIT_KEYS)
 
 
@@ -759,7 +767,11 @@ class DomainConfig:
 
         Idempotent, so it can be re-run after any field is changed.
         """
-        if self.icase == ICASE_CHANNEL:
+        # apply_case_geometry_defaults in the solver's input_general.f90.
+        # The case fixes the extents and they override whatever the input
+        # file says - a TGV file holding a rounded 3.141593 still gets an
+        # exact pi, and reading the file literally put the mesh 3e-7 out.
+        if self.icase in (ICASE_CHANNEL, ICASE_DUCT):
             self.lyb, self.lyt = -1.0, 1.0
         elif self.icase == ICASE_PIPE:
             self.lyb, self.lyt = 0.0, 1.0
@@ -767,6 +779,15 @@ class DomainConfig:
         elif self.icase == ICASE_ANNULAR:
             self.lyt = 1.0
             self.lzz = 2.0 * np.pi
+        elif self.icase in (ICASE_TGV2D, ICASE_TGV3D):
+            self.lxx = self.lzz = 2.0 * np.pi
+            self.lyb, self.lyt = -np.pi, np.pi
+        elif self.icase == ICASE_BURGERS:
+            self.lxx = self.lzz = self.lyt = 2.0
+            self.lyb = 0.0
+        elif self.icase == ICASE_ALGTEST:
+            self.lxx = self.lzz = self.lyt = 2.0 * np.pi
+            self.lyb = 0.0
 
         self.icoordinate = (ICYLINDRICAL if self.icase in (ICASE_PIPE, ICASE_ANNULAR)
                             else ICARTESIAN)

@@ -443,8 +443,19 @@ def apply_case_inputs(config: Config, quiet: bool = False) -> Config:
 
     _settle_case_switches(config)
 
-    # The toolkit carries liquid-metal properties only; a case run with
-    # anything else has to say so rather than fall back to a wrong fluid.
+    # The input file is only the right source for these if it still
+    # describes the run sitting beside it. Checked against the mesh in the
+    # output, which the input file fully determines.
+    import case_consistency as cons
+    for case in config.cases:
+        for line in cons.describe_inconsistencies(
+                ut.case_path(config.folder_path, case), case):
+            say(line)
+
+    # Supercritical water and CO2 come from NIST tables and the liquid
+    # metals from correlations, which between them is every fluid the
+    # solver models bar plain water. Anything left unmapped has to say so
+    # rather than fall back to a wrong fluid.
     for case, params in per_case.items():
         if params.get('thermo_on') and not params.get('working_fluid'):
             say(f'Note: {case} was run with {params.get("ifluid_name")}, which the '
@@ -1485,13 +1496,15 @@ class HeatTransferCoefficient(Profiles):
     """Wall heat transfer coefficient profile (x-direction only)."""
 
     def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
-                 working_fluid: str):
+                 working_fluid: str, case_dir: str = None):
         super().__init__('heat_transfer_coeff', 'Heat Transfer Coefficient', ['T'])
         self.cases = cases
         self.ref_temp = ref_temp
         self.wall_heat_flux = wall_heat_flux
         self.x_profile_only = True
-        self.fluid = ut.get_fluid_properties(working_fluid)
+        # case_dir so a supercritical case is evaluated against the NIST
+        # table sitting in its own folder - the one the solver read.
+        self.fluid = ut.get_fluid_properties(working_fluid, case_dir=case_dir)
 
     def _case_value(self, values: List[float], case: str) -> float:
         return float(values[self.cases.index(case)]) if len(values) > 1 else float(values[0])
@@ -1544,12 +1557,12 @@ class NusseltNumber(HeatTransferCoefficient):
     """Wall Nusselt number profile (x-direction only)."""
 
     def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
-                 ref_length: List[float], working_fluid: str):
-        super().__init__(cases, ref_temp, wall_heat_flux, working_fluid)
+                 ref_length: List[float], working_fluid: str, case_dir: str = None):
+        super().__init__(cases, ref_temp, wall_heat_flux, working_fluid, case_dir)
         self.name = 'nusselt_number'
         self.label = 'Local Nusselt Number'
         self.ref_length = ref_length
-        self.fluid = ut.get_fluid_properties(working_fluid)
+        self.fluid = ut.get_fluid_properties(working_fluid, case_dir=case_dir)
 
     def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
         if not data_loader.has(case, 'T', timestep):
@@ -2594,6 +2607,20 @@ class TurbulenceStatsPipeline:
         self.statistics: List[Union[ReStresses, Profiles, Budget]] = []
         self._register_statistics()
 
+    def _first_case_dir(self):
+        """A case folder to look in for a NIST property table.
+
+        The supercritical fluids are read from a table that lives in the
+        case folder, so the properties follow the run rather than a copy
+        bundled here. Comparing several cases that used different tables
+        is not something the statistics can represent anyway - they share
+        one fluid object - so the first case is the one that decides, and
+        the bundled table is the fallback when it has none.
+        """
+        if not self.config.cases:
+            return None
+        return ut.case_path(self.config.folder_path, self.config.cases[0])
+
     def _register_statistics(self) -> None:
         """Register all enabled statistics based on configuration"""
         if self.config.ux_velocity_on:
@@ -2642,6 +2669,7 @@ class TurbulenceStatsPipeline:
                 self.config.ref_temp,
                 self.config.wall_heat_flux,
                 self.config.working_fluid,
+                self._first_case_dir(),
             ))
 
         if self.config.Nusselt_number_on:
@@ -2651,6 +2679,7 @@ class TurbulenceStatsPipeline:
                 self.config.wall_heat_flux,
                 self.config.ref_length,
                 self.config.working_fluid,
+                self._first_case_dir(),
             ))
 
         if self.config.turb_prandtl_on:

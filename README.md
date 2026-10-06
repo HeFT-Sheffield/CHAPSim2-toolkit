@@ -89,9 +89,44 @@ every u_τ-normalised profile with nothing on the plot to show for it.
 
 The bulk velocity and the wall heat flux are outcomes of a run rather than
 inputs to it, so they are not in the input file and are still given by hand.
-The toolkit carries property data for liquid metals only; a case run with
-anything else (supercritical water, say) is named in a note rather than
-silently given the wrong fluid.
+
+Loading a case also checks that the data is the data the input file describes,
+by rebuilding the mesh from `ncx/ncy/ncz`, `istret` and `rstret` and comparing
+it with the grid the solver wrote. An input file edited after the run, or
+output copied in from a different case, would otherwise go unnoticed and
+silently rescale every profile. A changed clustering is the case that matters:
+the cell count still matches, so only the node positions reveal it.
+
+## Fluid properties:
+
+Properties are a port of the solver's own model in `src/input_thermo.f90`,
+with the coefficients from `src/modules.f90`, because post-processing that
+uses a different conductivity than the run used is not measuring that run.
+As in the solver there are two states:
+
+- **supercritical water and CO₂** — interpolated from the NIST tables, read
+  from the case folder when it has one (the solver opens them by bare
+  filename from its working directory, so that copy is the authoritative
+  one) and otherwise from `Reference_Data/thermal_properties/`;
+- **liquid metals** — sodium, lead, bismuth, LBE, lithium, FLiBe and
+  PbLi-17, from the polynomial correlations in T.
+
+Verified against the solver: every coefficient is compared with
+`modules.f90` by parsing it, and supercritical water against the
+`4_check/check_ftplist_dim.dat` property list the solver itself writes.
+
+Where the solver stops the run — a temperature outside the fluid's range —
+the toolkit returns NaN instead, so one bad cell leaves a gap rather than
+costing the whole figure. Two limits are worth knowing:
+
+- the PbLi-17 viscosity cubic crosses zero near 859 K, although the solver
+  treats PbLi as valid up to 1943 K; above that the toolkit returns NaN and
+  warns, rather than carrying a negative viscosity into a Prandtl number;
+- `CoD_LBE` in `modules.f90` has `+1.293`, which makes LBE *denser* as it is
+  heated. With the sign negative it matches the OECD/NEA handbook to 0.06%,
+  so the plus is almost certainly a typo. The toolkit reproduces the solver
+  deliberately — agreeing with the run matters more — but this should be
+  fixed in the solver and then here.
 
 ## Scripts:
 

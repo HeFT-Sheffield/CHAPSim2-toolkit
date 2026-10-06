@@ -76,6 +76,9 @@ setup(
     },
     include_package_data=True,
     package_data={
+        # Includes Reference_Data/thermal_properties/, the NIST tables for
+        # supercritical water and CO2 that fluid_properties falls back on
+        # when a case folder has no copy of its own.
         "": ["Reference_Data/**/*"],
     },
     zip_safe=False,

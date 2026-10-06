@@ -342,6 +342,24 @@ The bulk velocity and the wall heat flux are outcomes of the run rather
 than inputs to it, so they are not in the input file and still have to be
 given here. A case with no input_chapsim.ini leaves every box as it is.
 
+Loading a case also checks that the output is the output this input file
+describes, by rebuilding the mesh from the cell counts and the stretching
+and comparing it with the grid the solver wrote. If they disagree the
+console says so - the usual cause is an input file edited after the run.
+
+Fluid properties
+----------------
+These follow the solver's own model, so the numbers here are the numbers
+the run used:
+
+  supercritical water, CO2   interpolated from the NIST table, taken from
+                             the case folder when it has one
+  liquid metals              sodium, lead, bismuth, LBE, lithium, FLiBe
+                             and PbLi-17, from correlations in T
+
+Outside a fluid's valid range the properties come back as NaN and plot as
+a gap, rather than as a confident extrapolation.
+
 Input
 -----
   Input format   xdmf for binary output, text for the ASCII profile
