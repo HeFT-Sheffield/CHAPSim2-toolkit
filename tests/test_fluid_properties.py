@@ -188,9 +188,9 @@ def test_a_table_value_at_a_tabulated_point_is_that_value():
 
 
 def test_both_supercritical_fluids_load():
-    for name, pressure in (('scp_water', 23.5), ('scp_co2', 8.0)):
+    for name, pressure in (('scp_water', 23.5e6), ('scp_co2', 8.0e6)):
         fluid = fp.get_fluid_properties(name)
-        assert fluid.pressure == pressure
+        assert fluid.pressure == pressure       # Pa, not the file's MPa
         assert fluid.T_max > fluid.T_min
         assert len(fluid._table) > 1000
 
@@ -321,13 +321,25 @@ def test_the_electrical_conductivity_is_one_as_the_solver_sets_it():
         assert fp.get_fluid_properties(name).electrical_conductivity(700.0) == 1.0
 
 
-def test_lithium_viscosity_is_in_pascal_seconds_like_every_other_fluid():
-    """It used to be the one fluid returning micro Pa s from viscosity(),
-    a factor of a million out for anything that did not special-case it."""
-    lithium = fp.get_fluid_properties('lithium')
-    assert 1e-5 < lithium.viscosity(800.0) < 1e-2
-    assert abs(lithium.viscosity_uPa_s(800.0)
-               - 1e6 * lithium.viscosity(800.0)) < 1e-9
+def test_every_property_is_si():
+    """Viscosity in Pa s, not micro Pa s; pressure in Pa, not MPa. Lithium
+    used to be the one fluid returning micro Pa s from viscosity(), a
+    factor of a million out for anything that did not special-case it, and
+    the table pressure was left in the MPa the file states it in."""
+    for name in fp.FLUIDS:
+        fluid = fp.get_fluid_properties(name)
+        # Near the lower bound, where every fluid is valid - PbLi's
+        # viscosity cubic has already gone NaN by the midpoint.
+        T = fluid.T_min + 0.05 * (fluid.T_max - fluid.T_min)
+        # liquid metals ~1e-4, supercritical water ~1e-5: all Pa s
+        assert 1e-6 < fluid.viscosity(T) < 1e-1, f'{name} viscosity'
+        assert 1e2 < fluid.density_mass(T) < 2e4, f'{name} density'
+        assert 0.1 < fluid.thermal_conductivity(T) < 1e3, f'{name} k'
+        assert 1e2 < fluid.heat_capacity_p(T) < 1e6, f'{name} cp'
+        assert not hasattr(fluid, 'viscosity_uPa_s'), \
+            f'{name} still offers a non-SI accessor'
+    assert fp.get_fluid_properties('scp_water').pressure == 23.5e6
+    assert fp.get_fluid_properties('scp_co2').pressure == 8.0e6
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +376,37 @@ def test_no_fluid_at_all_explains_where_it_should_come_from():
         assert 'input_chapsim.ini' in str(exc)
     else:
         raise AssertionError('None was accepted as a fluid')
+
+
+def test_enthalpy_inverts_back_to_the_temperature_it_came_from():
+    """compute_heat_transfer_coeff goes the other way, from the bulk
+    enthalpy in the data to a bulk temperature, so the two directions have
+    to agree."""
+    for name in fp.FLUIDS:
+        fluid = fp.get_fluid_properties(name)
+        T = np.linspace(fluid.T_min + 1, fluid.T_max - 1, 50)
+        back = fluid.temperature_from_enthalpy(fluid.enthalpy(T))
+        # The correlation fluids go through the solver's own 1024-point
+        # table, so they carry its discretisation error and no more.
+        assert np.nanmax(np.abs(back - T)) < 1e-2, name
+
+
+def test_an_enthalpy_outside_the_range_gives_nan_not_an_edge_value():
+    water = fp.get_fluid_properties('scp_water')
+    assert np.isnan(water.temperature_from_enthalpy(1.0))
+    assert np.isnan(water.temperature_from_enthalpy(1e12))
+
+
+def test_a_non_dimensional_enthalpy_is_dimensionalised_first():
+    """The solver writes h as (h - h0)/(T0 cp0); that is what arrives from
+    the data, and ref_temp is how the caller says so."""
+    water = fp.get_fluid_properties('scp_water')
+    T0 = 645.15
+    T = 700.0
+    h0 = water.enthalpy(T0)
+    cp0 = water.heat_capacity_p(T0)
+    undim = (water.enthalpy(T) - h0) / (T0 * cp0)
+    assert abs(water.temperature_from_enthalpy(undim, ref_temp=T0) - T) < 1e-6
 
 
 def test_the_deprecated_class_names_still_build_the_right_fluid():

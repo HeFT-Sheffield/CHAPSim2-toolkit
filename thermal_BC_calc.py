@@ -14,71 +14,76 @@ from utils import (
     get_fluid_properties,
 )
 
-def generate_property_table(T_min, T_max, T_ref, pressure=0.1, n_points=20,
-                           save_tsv=False, filename='lithium_properties.tsv'):
-    """
-    Generate a property table for liquid lithium over a temperature range.
-    
-    Parameters:
-    -----------
-    T_min : float
-        Minimum temperature in K
-    T_max : float
-        Maximum temperature in K
-    T_ref : float
-        Reference temperature for enthalpy and entropy calculations
-    pressure : float
-        Pressure in MPa (default 0.1 MPa = ~1 atm)
-    n_points : int
-        Number of temperature points
-    save_tsv : bool
-        Whether to save the table as CSV
-    filename : str
-        Output filename if save_tsv=True
-    
+def generate_property_table(T_min, T_max, fluid='lithium', pressure=1.0e5,
+                            n_points=1024, save_dat=False, filename=None):
+    """Tabulate a fluid's properties in the format CHAPSim2 reads.
+
+    The columns and their units are the ones
+    buildup_property_relations_from_table expects in a NIST_*.DAT, so the
+    file this writes can be handed straight back to the solver as a
+    table-based fluid - which is the only use a property table has here.
+
+    It used to emit molar quantities for lithium alone, in a mix of kJ/mol,
+    J/mol/K and micro Pa s, in a layout the solver cannot read. Everything
+    is SI now and every fluid works.
+
+    Args:
+        T_min, T_max: temperature range in K. Clipped to the range the
+            fluid's properties are valid over.
+        fluid: any name get_fluid_properties takes.
+        pressure: in Pa. Written to the file in MPa, which is the
+            convention of the solver's own tables. The correlations are at
+            atmospheric pressure; the supercritical fluids carry their own
+            and this argument is ignored for them.
+        n_points: rows. The solver samples a correlation at 1024 points.
+        save_dat: write the table to disk as well as returning it.
+        filename: where to write; defaults to NIST_<FLUID>.DAT.
+
     Returns:
-    --------
-    pandas.DataFrame
-        Property table with requested columns
+        A pandas DataFrame with one row per temperature.
     """
-    
-    li = get_fluid_properties('lithium')
-    
-    # Check validity
-    if T_min < li.T_melt:
-        print(f"Warning: T_min ({T_min} K) is below melting point ({li.T_melt} K)")
-    if T_max > li.T_boil:
-        print(f"Warning: T_max ({T_max} K) is above boiling point ({li.T_boil} K)")
-    
-    # Generate temperature array
-    T_array = np.linspace(T_min, T_max, n_points)
-    
-    # Calculate properties in the requested order
+    props = get_fluid_properties(fluid)
+
+    lo, hi = max(T_min, props.T_min), min(T_max, props.T_max)
+    if lo >= hi:
+        raise ValueError(
+            f'{fluid} has no valid properties between {T_min} and {T_max} K; '
+            f'its range is {props.T_min:g} to {props.T_max:g} K')
+    if lo > T_min or hi < T_max:
+        print(f'Note: clipped to {lo:g}-{hi:g} K, the range {fluid} is '
+              f'valid over.')
+
+    T = np.linspace(lo, hi, n_points)
+    if getattr(props, 'pressure', None) is not None:
+        pressure = props.pressure
+
+    # Column 1 is MPa in the solver's own NIST files - its header says so,
+    # and it reads the value into a scratch variable and discards it. The
+    # file keeps that convention so the solver can read this back; the
+    # Python side is SI throughout and converts on read.
     data = {
-        'Temperature (K)': T_array,
-        'Pressure (MPa)': [pressure] * n_points,
-        'Density (mol/l)': [li.density_molar(T) for T in T_array],
-        'Volume (l/mol)': [li.molar_volume(T) for T in T_array],
-        'Internal Energy (kJ/mol)': [li.internal_energy(T, T_ref) for T in T_array],
-        'Enthalpy (kJ/mol)': [li.enthalpy(T, T_ref) for T in T_array],
-        'Entropy (J/mol*K)': [li.entropy(T, T_ref) for T in T_array],
-        'Cv (J/mol*K)': [li.heat_capacity_v(T) for T in T_array],
-        'Cp (J/mol*K)': [li.heat_capacity_p_molar(T) for T in T_array],
-        'Sound Spd. (m/s)': [li.speed_of_sound(T) for T in T_array],
-        'Joule-Thomson (K/MPa)': [li.joule_thomson(T) for T in T_array],
-        'Viscosity (uPa*s)': [li.viscosity(T) for T in T_array],
-        'Therm. Cond. (W/m*K)': [li.thermal_conductivity(T) for T in T_array],
-        'Phase': [li.phase(T, pressure) for T in T_array]
+        'P(Mpa)': np.full(n_points, float(pressure) / 1e6),
+        'H(J/KG)': props.enthalpy(T),
+        'T(K)': T,
+        'D(KG/M3)': props.density_mass(T),
+        'M(PA-S)': props.viscosity(T),
+        'K(W/M-K)': props.thermal_conductivity(T),
+        'CP(J/KG-K)': props.heat_capacity_p(T),
+        'Beta(1/K)': props.coeff_vol_exp(T),
     }
-    
     df = pd.DataFrame(data)
-    
-    # Save if requested
-    if save_tsv:
-        df.to_csv(filename, sep='\t', index=False)
-        print(f"Property table saved to {filename}")
-    
+
+    if save_dat:
+        filename = filename or f'NIST_{fluid.upper()}.DAT'
+        with open(filename, 'w') as fh:
+            # The solver skips one header line and then reads eight reals.
+            fh.write('#' + '\t'.join(df.columns) + '\n')
+            for row in df.itertuples(index=False):
+                fh.write('\t'.join(f'{v:.11E}' for v in row) + '\n')
+        print(f'Property table saved to {filename}')
+
     return df
+
 
 def Grahsof_to_temp_diff(grahsof, beta, L, mu, rho):
     """
@@ -185,12 +190,6 @@ def get_prandtl(temp, fluid):
     # was out by a factor of a million.
     return fluid.prandtl(temp)
 
-def get_viscosity_Pa_s(fluid, T):
-    """
-    Get viscosity in Pa·s for any fluid type.
-    """
-    return fluid.viscosity(T)
-
 def generate_normalized_property_table(fluid, T_ref, delta_T, n_points=20):
     """
     Map the change in thermophysical properties across a temperature range,
@@ -223,7 +222,7 @@ def generate_normalized_property_table(fluid, T_ref, delta_T, n_points=20):
 
     properties = {
         'Density': fluid.density_mass,
-        'Viscosity': lambda T: get_viscosity_Pa_s(fluid, T),
+        'Viscosity': fluid.viscosity,
         'Thermal Conductivity': fluid.thermal_conductivity,
         'Specific Heat (Cp)': fluid.heat_capacity_p,
         'Volumetric Expansion': fluid.coeff_vol_exp,
@@ -371,7 +370,7 @@ def interactive_calculation():
             print("Invalid input. Please enter a valid number.")
 
     # Calculate properties
-    mu = get_viscosity_Pa_s(fluid, T_ref)
+    mu = fluid.viscosity(T_ref)
     rho = fluid.density_mass(T_ref)
     k = fluid.thermal_conductivity(T_ref)
     cp = fluid.heat_capacity_p(T_ref)

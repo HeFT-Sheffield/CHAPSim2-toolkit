@@ -357,6 +357,8 @@ the run used:
   liquid metals              sodium, lead, bismuth, LBE, lithium, FLiBe
                              and PbLi-17, from correlations in T
 
+Everything is SI: K, kg/m3, Pa s, W/(m K), J/(kg K), J/kg, 1/K, Pa.
+
 Outside a fluid's valid range the properties come back as NaN and plot as
 a gap, rather than as a confident extrapolation.
 

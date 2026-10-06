@@ -19,10 +19,21 @@ The solver has two property states, and so does this:
     first, falling back to the copies bundled under
     ``Reference_Data/thermal_properties/``.
 
-Everything here is dimensional: T in K, density in kg/m3, viscosity in
-Pa s, conductivity in W/(m K), Cp in J/(kg K), enthalpy in J/kg, beta in
-1/K. The solver non-dimensionalises by its reference state afterwards;
-that is a separate step and is not done here.
+Everything here is dimensional and in SI, with no exceptions:
+
+    temperature             K
+    density                 kg/m3
+    dynamic viscosity       Pa s
+    thermal conductivity    W/(m K)
+    specific heat           J/(kg K)
+    specific enthalpy       J/kg
+    thermal expansion       1/K
+    pressure                Pa
+
+The NIST tables state pressure in MPa and the solver keeps it that way;
+it is converted on read, so nothing downstream has to remember which.
+The solver non-dimensionalises by its reference state afterwards; that is
+a separate step and is not done here.
 
 Outside a fluid's valid range the solver stops with "temperature exceeds
 specified range". Stopping is not useful in post-processing - a single
@@ -106,16 +117,11 @@ _COEFFICIENTS = {
     ),
     'lbe': dict(
         TM0=398.0, TB0=1927.0, HM0=38.6e3,
-        # KNOWN DISAGREEMENT WITH THE LITERATURE. The solver has +1.293,
-        # which makes LBE get denser as it is heated - 12099 kg/m3 at 800 K
-        # against the OECD/NEA handbook's 10037 (rho = 11096 - 1.3236 T).
-        # With the sign negative this correlation gives 10031, matching the
-        # handbook to 0.06%, so the plus is almost certainly a typo in
-        # modules.f90. It is reproduced here on purpose: post-processing
-        # has to agree with the run, and silently using a different density
-        # than the solver did would be worse than using a wrong one openly.
-        # Fix it in the solver, then here.
-        CoD=[11065.0, 1.293],
+        # Gives 10031 kg/m3 at 800 K, against the OECD/NEA handbook's
+        # 10037 from rho = 11096 - 1.3236 T: 0.06%. The solver carried a
+        # +1.293 here until October 2026, which made LBE denser as it was
+        # heated; runs made before that fix disagree with this.
+        CoD=[11065.0, -1.293],
         CoK=[3.284, 1.617e-2, -2.305e-6],
         CoB=8558.0,
         CoCp=[-4.56e5, 0.0, 164.8, -3.94e-2, 1.25e-5],
@@ -236,8 +242,40 @@ class _Properties:
         return self.thermal_conductivity(T) \
             / self.density_mass(T) / self.heat_capacity_p(T)
 
-    def viscosity_uPa_s(self, T):
-        return self.viscosity(T) * 1e6
+    def temperature_from_enthalpy(self, h, ref_temp=None):
+        """Invert h(T), as the solver's ftp_refresh_thermal_properties_from_H.
+
+        The solver inverts by binary search and linear interpolation over
+        the same list it interpolates T with, so the round trip T -> h -> T
+        is exact at a tabulated point and consistent between them. This
+        interpolates over the same points for the same reason.
+
+        Args:
+            h: specific enthalpy in J/kg, or non-dimensional if ref_temp is
+                given.
+            ref_temp: when set, h is taken to be the solver's
+                non-dimensional enthalpy, (h - h0)/(T0 cp0) with the
+                reference state at this temperature, and is dimensionalised
+                before inversion. This is the form the solver writes to
+                file, so it is the form that arrives from the data.
+
+        Returns:
+            Temperature in K. NaN where h is outside the range the fluid
+            covers, for the same reason the forward direction gives NaN.
+        """
+        h = np.asarray(h, dtype=float)
+        if ref_temp is not None:
+            h0 = self.enthalpy(ref_temp)
+            cp0 = self.heat_capacity_p(ref_temp)
+            h = h * ref_temp * cp0 + h0
+        T_points, h_points = self._enthalpy_curve()
+        value = np.interp(h, h_points, T_points)
+        out = np.where((h >= h_points[0]) & (h <= h_points[-1]), value, np.nan)
+        return out if out.ndim else float(out)
+
+    def _enthalpy_curve(self):
+        """(T, h) sorted by increasing h, for inverting the relation."""
+        raise NotImplementedError
 
     def phase(self, T, P=None):
         """Solid, Liquid or Vapour by the melting and boiling points.
@@ -301,6 +339,10 @@ class _Properties:
 class FunctionProperties(_Properties):
     """A liquid metal, from the polynomial correlations (IPROPERTY_FUNCS)."""
 
+    #: The solver turns a correlation fluid into a table of this many
+    #: points before it inverts anything (N_FUNC2TABLE in input_thermo.f90).
+    N_FUNC2TABLE = 1024
+
     def __init__(self, name):
         self.name = name
         c = _COEFFICIENTS[name]
@@ -308,6 +350,7 @@ class FunctionProperties(_Properties):
         self.T_melt = self.T_min = c['TM0']
         self.T_boil = self.T_max = c['TB0']
         self.H_melt = c['HM0']
+        self._curve = None
 
     def __repr__(self):
         return (f'<{type(self).__name__} {self.name} '
@@ -359,6 +402,14 @@ class FunctionProperties(_Properties):
                  + h[4] * (T ** 3 - t0 ** 3))
         return self._masked(T, value)
 
+    def _enthalpy_curve(self):
+        if self._curve is None:
+            T = np.linspace(self.T_min, self.T_max, self.N_FUNC2TABLE)
+            h = np.asarray(self.enthalpy(T), dtype=float)
+            order = np.argsort(h)
+            self._curve = (T[order], h[order])
+        return self._curve
+
     def viscosity(self, T):
         T = np.asarray(T, dtype=float)
         m = self._c['CoM']
@@ -399,14 +450,16 @@ class TableProperties(_Properties):
         # Sorted small to big in T, as ftplist_sort_t_small2big does.
         table = table[np.argsort(table[:, 2])]
         self._table = table
-        self.pressure = float(table[0, 0])          # MPa
+        # The file states pressure in MPa; everything this module exposes
+        # is SI, so it is converted once here rather than remembered.
+        self.pressure = float(table[0, 0]) * 1e6    # Pa
         self.T_min = float(table[0, 2])
         self.T_max = float(table[-1, 2])
         self.T_melt = self.T_boil = None            # supercritical: neither
 
     def __repr__(self):
         return (f'<{type(self).__name__} {self.name} '
-                f'{self.pressure:g} MPa {self.T_min:g}-{self.T_max:g} K '
+                f'{self.pressure / 1e6:g} MPa {self.T_min:g}-{self.T_max:g} K '
                 f'{len(self._table)} rows from {os.path.basename(self.path)}>')
 
     def _interpolate(self, T, column):
@@ -433,6 +486,10 @@ class TableProperties(_Properties):
     def enthalpy(self, T):
         """Specific enthalpy in J/kg, straight from the table."""
         return self._interpolate(T, 'h')
+
+    def _enthalpy_curve(self):
+        order = np.argsort(self._table[:, 1])
+        return self._table[order, 2], self._table[order, 1]
 
 
 def find_property_table(filename, case_dir=None):

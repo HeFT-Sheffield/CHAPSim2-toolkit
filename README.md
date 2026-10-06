@@ -115,18 +115,19 @@ Verified against the solver: every coefficient is compared with
 `modules.f90` by parsing it, and supercritical water against the
 `4_check/check_ftplist_dim.dat` property list the solver itself writes.
 
+Everything is SI, with no exceptions: K, kg/m³, Pa·s, W/(m·K), J/(kg·K),
+J/kg, 1/K and Pa. The NIST files state pressure in MPa and the solver keeps
+it that way, so it is converted once on read and nothing downstream has to
+remember which. Enthalpy inverts too — `temperature_from_enthalpy` is a port
+of the solver's `ftp_refresh_thermal_properties_from_H`, which is how a bulk
+temperature is recovered from the bulk enthalpy in the data.
+
 Where the solver stops the run — a temperature outside the fluid's range —
 the toolkit returns NaN instead, so one bad cell leaves a gap rather than
-costing the whole figure. Two limits are worth knowing:
-
-- the PbLi-17 viscosity cubic crosses zero near 859 K, although the solver
-  treats PbLi as valid up to 1943 K; above that the toolkit returns NaN and
-  warns, rather than carrying a negative viscosity into a Prandtl number;
-- `CoD_LBE` in `modules.f90` has `+1.293`, which makes LBE *denser* as it is
-  heated. With the sign negative it matches the OECD/NEA handbook to 0.06%,
-  so the plus is almost certainly a typo. The toolkit reproduces the solver
-  deliberately — agreeing with the run matters more — but this should be
-  fixed in the solver and then here.
+costing the whole figure. One limit is worth knowing: the PbLi-17 viscosity
+cubic crosses zero near 859 K, although the solver treats PbLi as valid up
+to 1943 K. Above that the toolkit returns NaN and warns, rather than
+carrying a negative viscosity into a Prandtl number.
 
 ## Scripts:
 
@@ -142,7 +143,7 @@ costing the whole figure. Two limits are worth knowing:
 
 **mesh_analysis.py**: Pre-processing mesh resolution analysis. Reads a case's input_chapsim.ini, rebuilds the wall-normal grid exactly as the solver does, and assesses it against DNS resolution requirements (dy+, dx+, dz+, grid stretching, MHD boundary layer, recommended minimum mesh and time step). Python port of the estimate_spacial_resolution/estimate_temporal_resolution routines in CHAPSim2's apx_prerun_mod, so a mesh can be checked before a job is submitted. Run 'python mesh_analysis.py path/to/input_chapsim.ini', or with no argument to be prompted. Optionally saves a mesh distribution plot.
 
-**thermal_BC_calc.py**: Property functions for liquid metals in CHAPSim2, functionality to output NIST format data file, convert a given Grashof number to constant wall temperature difference or heat flux (channel flow), calculate Prandtl number. Interactive input.
+**thermal_BC_calc.py**: Convert a Grashof number to a wall temperature difference or heat flux, and tabulate any fluid's properties in the format CHAPSim2 reads — the same eight SI columns as a `NIST_*.DAT`, so the file it writes can be handed back to the solver as a table-based fluid.
 
 ## Tests:
 
