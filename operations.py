@@ -436,7 +436,7 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None, wal
 # =====================================================================================================================================================
 
 def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coords=None,
-                                     fluid=None):
+                                     fluid=None, return_bulk_temperature=False):
     """Compute wall heat-transfer coefficient using a mass flux average of enthalpy.
     
     Args:
@@ -446,10 +446,15 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         fu: Mass flux field (same shape as temp)
          y_coords: Wall-normal coordinates for integration
         fluid: Fluid properties object (from utils.get_fluid_properties).
-               If None, defaults to LiquidLithiumProperties.
-        
+        return_bulk_temperature: also return the bulk temperature profile.
+            The Nusselt number needs the conductivity at the bulk
+            temperature, and this is where the bulk temperature is already
+            worked out - computing it twice is how the two drift apart.
+
     Returns:
-        Heat transfer coefficient (scalar or 1D array depending on input dims)
+        Heat transfer coefficient (scalar or 1D array depending on input
+        dims), or (coefficient, bulk temperature in K) when
+        return_bulk_temperature is set.
     """
     temp = np.asarray(temp)
     fuh = np.asarray(fuh)
@@ -459,7 +464,11 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         raise ValueError("y_coords is required for integration.")
     
     if fluid is None:
-        fluid = utils.get_fluid_properties('lithium')
+        # Defaulting to lithium here meant a water case got a lithium
+        # conductivity and said nothing about it.
+        raise ValueError(
+            'compute_wall_heat_transfer_coeff needs a fluid; it is normally '
+            'read from the case input_chapsim.ini')
     
     if temp.ndim == 3:
         # Ensure y_coords is 1D and matches axis 1 size (nz, ny, nx)
@@ -491,10 +500,21 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
     fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x, ref_temp)  # dimensional bulk temperature
     wall_temp = wall_temp * ref_temp
 
-    return heat_flux / (wall_temp - fluid_temp)
+    coefficient = heat_flux / (wall_temp - fluid_temp)
+    if return_bulk_temperature:
+        return coefficient, fluid_temp
+    return coefficient
 
 def compute_wall_Nusselt_number(heat_transfer_coeff, ref_length, ref_fluid_properties):
-    return ( heat_transfer_coeff * ref_length ) / ref_fluid_properties['k']
+    """Nu = h L / k.
+
+    k may be a scalar or a profile. For internal flow it is evaluated at
+    the bulk temperature, which varies along the duct, so on a heated
+    supercritical case it is a profile - k changes sharply through the
+    pseudo-critical region and a single reference value is not close.
+    """
+    k = np.asarray(ref_fluid_properties['k'], dtype=float)
+    return (np.asarray(heat_transfer_coeff, dtype=float) * ref_length) / k
 
 def compute_temp_fluc(T, TT):
     temp_fluc = np.sqrt(TT - np.square(T))

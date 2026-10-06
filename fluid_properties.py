@@ -82,10 +82,18 @@ _WARNED = set()
 #   H  = HM0 + CoH[-1]*(1/T - 1/TM0) + CoH[0] + CoH[1]*(T - TM0)
 #                                    + CoH[2]*(T^2 - TM0^2)
 #                                    + CoH[3]*(T^3 - TM0^3)
-#   M  : per fluid, see _viscosity below
+#   M  : per fluid, see viscosity() below
 #
-# CoCp and CoH are stored here from index -2 and -1 respectively, as in
-# the Fortran; the lists below start at that first index.
+# CoCp is stored from index -2, as in the Fortran.
+#
+# CoH is not stored at all: the solver derives it from CoCp so that
+# dH/dT = Cp holds exactly, and _derived_CoH below does the same, for the
+# same reason. Transcribing both is how they came to disagree - the
+# sodium CoH in modules.f90 was LBE's until October 2026.
+#
+# TP0max is the top of the interval the correlations are evaluated over.
+# It is TB0 - melting to boiling is the single-phase liquid range - except
+# where a shipped fit is known not to hold that far; see pbli.
 
 _COEFFICIENTS = {
     'sodium': dict(
@@ -94,7 +102,6 @@ _COEFFICIENTS = {
         CoK=[104.0, -0.047, 0.0],
         CoB=4316.0,
         CoCp=[-3.001e6, 0.0, 1658.0, -0.8479, 4.454e-4],
-        CoH=[4.56e5, 0.0, 164.8, -1.97e-2, 4.167e-4],
         CoM=[556.835, -6.4406, -0.3958], m_form='exp_ln',
     ),
     'lead': dict(
@@ -103,7 +110,6 @@ _COEFFICIENTS = {
         CoK=[9.2, 0.011, 0.0],
         CoB=8942.0,
         CoCp=[-1.524e6, 0.0, 176.2, -4.923e-2, 1.544e-5],
-        CoH=[1.524e6, 0.0, 176.2, -2.4615e-2, 5.147e-6],
         CoM=[1069.0, 4.55e-4, 0.0], m_form='arrhenius',
     ),
     'bismuth': dict(
@@ -112,7 +118,6 @@ _COEFFICIENTS = {
         CoK=[7.34, 9.5e-3, 0.0],
         CoB=8791.0,
         CoCp=[7.183e6, 0.0, 118.2, 5.934e-3, 0.0],
-        CoH=[-7.183e6, 0.0, 118.2, 2.967e-3, 0.0],
         CoM=[780.0, 4.456e-4, 0.0], m_form='arrhenius',
     ),
     'lbe': dict(
@@ -126,7 +131,6 @@ _COEFFICIENTS = {
         CoB=8558.0,
         CoCp=[-4.56e5, 0.0, 164.8, -3.94e-2, 1.25e-5],
         # modules.f90 marks this one "check, WRong from literature."
-        CoH=[4.56e5, 0.0, 164.8, -1.97e-2, 4.167e-4],
         CoM=[754.1, 4.94e-4, 0.0], m_form='arrhenius',
     ),
     'lithium': dict(
@@ -137,7 +141,6 @@ _COEFFICIENTS = {
         CoK=[22.28, 0.0500, -1.243e-5],
         CoB=5620.0,
         CoCp=[0.0, 0.0, 4754.0, -9.25e-1, 2.91e-4],
-        CoH=[0.0, 0.0, 4754.0, -4.625e-1, 9.70e-5],
         CoM=[-4.164, -6.374e-1, 2.921e2], m_form='lithium',
     ),
     'flibe': dict(
@@ -146,7 +149,6 @@ _COEFFICIENTS = {
         CoK=[1.1, 0.0, 0.0],
         CoB=4940.7,
         CoCp=[0.0, 0.0, 2386.0, 0.0, 0.0],
-        CoH=[0.0, 0.0, 2386.0, 0.0, 0.0],
         CoM=[4022.0, 7.803e-5, 0.0], m_form='arrhenius',
     ),
     'pbli': dict(
@@ -155,11 +157,13 @@ _COEFFICIENTS = {
         CoK=[9.148, 1.963e-2, 0.0],
         CoB=8836.8,
         CoCp=[0.0, 0.0, 195.0, -9.116e-3, 0.0],
-        CoH=[0.0, 0.0, 195.0, -4.558e-3, 0.0],
         # M = CoM[0] + CoM[1]*T + CoM[2]*T^2 + CoM[3]*T^3
-        # The cubic turns negative above about 859 K, well inside the
-        # TM0-TB0 range the solver declares valid. _positive() below
-        # returns NaN there rather than a negative viscosity.
+        # The viscosity cubic falls through zero at 858.996 K and is
+        # increasingly negative above it. The solver caps the property
+        # range at 850 K for this fluid alone rather than let that happen;
+        # the bound comes from the fit's own root, not from a literature
+        # validity range, because none is recorded for this polynomial.
+        TP0max=850.0,
         CoM=[0.0061091, -2.2574e-5, 3.766e-8, -2.2887e-11], m_form='cubic',
     ),
 }
@@ -348,9 +352,29 @@ class FunctionProperties(_Properties):
         c = _COEFFICIENTS[name]
         self._c = c
         self.T_melt = self.T_min = c['TM0']
-        self.T_boil = self.T_max = c['TB0']
+        self.T_boil = c['TB0']
+        # Melting to boiling, unless the fluid's fit is known not to reach
+        # boiling. T_boil stays the physical value; T_max is how far the
+        # correlations may be trusted, and they are not the same question.
+        self.T_max = c.get('TP0max', c['TB0'])
         self.H_melt = c['HM0']
         self._curve = None
+
+    @property
+    def CoH(self):
+        """Enthalpy coefficients, integrated term by term from CoCp.
+
+        The solver derives these rather than transcribing them, so that
+        dH/dT = Cp holds exactly; this does the same. CoCp[-1] would
+        integrate to a ln(T) term the H polynomial has no slot for, so it
+        has to stay zero - it is zero for every fluid here.
+        """
+        cp = self._c['CoCp']
+        if cp[1] != 0.0:
+            raise ValueError(
+                f'{self.name}: CoCp[-1] is non-zero, which integrates to a '
+                f'ln(T) term this enthalpy form cannot represent')
+        return [-cp[0], 0.0, cp[2], cp[3] / 2.0, cp[4] / 3.0]
 
     def __repr__(self):
         return (f'<{type(self).__name__} {self.name} '
@@ -392,7 +416,7 @@ class FunctionProperties(_Properties):
         differ, and the one that matters is the one the run used.
         """
         T = np.asarray(T, dtype=float)
-        h = self._c['CoH']              # indices -1, 0, 1, 2, 3
+        h = self.CoH                    # indices -1, 0, 1, 2, 3
         t0 = self._c['TM0']
         value = (self._c['HM0']
                  + h[0] * (1.0 / T - 1.0 / t0)

@@ -65,7 +65,7 @@ def test_the_correlation_coefficients_match_the_solver():
     mismatches = []
     for name, suffix in _SUFFIX.items():
         ours = fp._COEFFICIENTS[name]
-        for key in ('CoD', 'CoK', 'CoCp', 'CoH', 'CoM'):
+        for key in ('CoD', 'CoK', 'CoCp', 'CoM'):
             # modules.f90 spells bismuth's constants with a capital I.
             for candidate in (f'{key}_{suffix}', f'{key}_{suffix.upper()}'):
                 try:
@@ -82,6 +82,56 @@ def test_the_correlation_coefficients_match_the_solver():
                     f'{name}.{key}: solver {theirs} != toolkit {ours[key]}')
     assert not mismatches, 'coefficients have drifted:\n  ' + \
         '\n  '.join(mismatches)
+
+
+def test_the_enthalpy_coefficients_are_the_integral_of_the_heat_capacity():
+    """Both the solver and this derive CoH from CoCp rather than
+    transcribing it, so that dH/dT = Cp holds exactly. Transcribing both
+    is how they came to disagree: the sodium CoH in modules.f90 was LBE's
+    until the solver started deriving it."""
+    for name in _SUFFIX:
+        fluid = fp.get_fluid_properties(name)
+        cp = fp._COEFFICIENTS[name]['CoCp']
+        assert fluid.CoH == [-cp[0], 0.0, cp[2], cp[3] / 2.0, cp[4] / 3.0]
+
+
+def test_dh_dt_is_cp_for_every_fluid():
+    """The identity the derivation exists to guarantee, checked numerically
+    rather than algebraically - the point is the code, not the algebra."""
+    for name in _SUFFIX:
+        fluid = fp.get_fluid_properties(name)
+        T = np.linspace(fluid.T_min + 10, fluid.T_max - 10, 200)
+        step = 1e-4
+        slope = (np.asarray(fluid.enthalpy(T + step))
+                 - np.asarray(fluid.enthalpy(T - step))) / (2 * step)
+        cp = np.asarray(fluid.heat_capacity_p(T))
+        assert np.nanmax(np.abs(slope - cp) / np.abs(cp)) < 1e-7, name
+
+
+def test_the_property_range_is_melting_to_boiling_except_where_capped():
+    """TP0max, not TB0: a correlation is not guaranteed to hold over the
+    whole liquid range."""
+    for name in _SUFFIX:
+        fluid = fp.get_fluid_properties(name)
+        assert fluid.T_min == fluid.T_melt
+        if name == 'pbli':
+            continue
+        assert fluid.T_max == fluid.T_boil, name
+
+
+def test_pbli_is_capped_below_the_root_of_its_viscosity_fit():
+    """The solver caps PbLi at 850 K because the viscosity cubic falls
+    through zero at 858.996 K. The bound comes from the fit's own root,
+    not from a literature validity range."""
+    source = _modules_f90()
+    match = re.search(r'TP0max_PbLi\s*=\s*([0-9.eEdD+-]+)_WP', source)
+    assert match, 'TP0max_PbLi not found in modules.f90'
+    pbli = fp.get_fluid_properties('pbli')
+    assert pbli.T_max == float(match.group(1))
+    assert pbli.T_max < pbli.T_boil
+    # and the whole usable range now gives a positive viscosity
+    T = np.linspace(pbli.T_min, pbli.T_max, 2000)
+    assert np.all(np.asarray(pbli.viscosity(T)) > 0)
 
 
 def test_the_melting_and_boiling_points_match_the_solver():
@@ -221,26 +271,30 @@ def test_water_outside_its_table_is_nan():
 
 
 def test_a_non_physical_correlation_value_becomes_nan_with_a_warning():
-    """PbLi's viscosity cubic goes negative at about 859 K, well inside the
-    range the solver declares valid. A negative viscosity must not reach a
-    Prandtl number."""
+    """The guard that stops a negative viscosity reaching a Prandtl
+    number. No shipped correlation trips it now that PbLi is capped, so it
+    is exercised against a deliberately broken fluid rather than left
+    untested."""
     fp._WARNED.clear()
-    pbli = fp.get_fluid_properties('pbli')
-    assert pbli.viscosity(600.0) > 0
+    broken = fp.get_fluid_properties('pbli')
+    broken.T_max = broken.T_boil          # un-cap it, back to the old range
+    broken._curve = None
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        assert np.isnan(pbli.viscosity(1200.0))
+        assert np.isnan(broken.viscosity(1200.0))
     assert any(issubclass(w.category, fp.PropertyRangeWarning)
                for w in caught), 'the non-physical value was silent'
 
-
 def test_the_warning_is_raised_once_not_once_per_point():
+    """A 5000-point profile should say it once, not 5000 times."""
     fp._WARNED.clear()
-    pbli = fp.get_fluid_properties('pbli')
+    broken = fp.get_fluid_properties('pbli')
+    broken.T_max = broken.T_boil          # un-cap it, back to the old range
+    broken._curve = None
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        pbli.viscosity(np.linspace(900.0, 1900.0, 5000))
-        pbli.viscosity(np.linspace(900.0, 1900.0, 5000))
+        broken.viscosity(np.linspace(900.0, 1900.0, 5000))
+        broken.viscosity(np.linspace(900.0, 1900.0, 5000))
     assert len(caught) == 1
 
 
@@ -280,17 +334,19 @@ def test_no_fluid_ever_returns_a_negative_property():
                     f'{name}.{quantity} goes negative instead of NaN'
 
 
-def test_pbli_is_only_usable_over_part_of_the_range_the_solver_claims():
-    """Documents a real limit: the viscosity cubic in modules.f90 crosses
-    zero near 859 K, but the solver treats PbLi as valid to TB0 = 1943 K."""
+def test_the_whole_declared_range_of_every_fluid_is_now_usable():
+    """Once PbLi is capped at its fit's root, no fluid has a region inside
+    its own range where a property comes back NaN. The guard stays, but it
+    should no longer fire on any shipped correlation."""
     fp._WARNED.clear()
-    pbli = fp.get_fluid_properties('pbli')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', fp.PropertyRangeWarning)
-        T = np.linspace(pbli.T_min, pbli.T_max, 20000)
-        usable = T[np.isfinite(pbli.viscosity(T))]
-    assert pbli.T_boil == 1943.0
-    assert 855.0 < usable.max() < 865.0
+    for name in fp.FLUIDS:
+        fluid = fp.get_fluid_properties(name)
+        T = np.linspace(fluid.T_min, fluid.T_max, 2000)
+        for quantity in ('density_mass', 'viscosity', 'thermal_conductivity',
+                         'heat_capacity_p'):
+            values = np.asarray(getattr(fluid, quantity)(T))
+            assert np.all(np.isfinite(values)), \
+                f'{name}.{quantity} has gaps inside its own range'
 
 
 def test_the_prandtl_number_is_mu_cp_over_k():

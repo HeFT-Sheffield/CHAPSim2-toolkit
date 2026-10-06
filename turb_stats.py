@@ -547,8 +547,10 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
         required.add('u3')
 
     if config.temp_on or config.heat_transf_coeff_on or config.Nusselt_number_on:
-        required.update({'T', 'Temperature', 'temp', 
-                         'fuh1', 'fu1'})
+        # 'Temperature' and 'temp' were listed here too, and the solver
+        # writes none of them, so every thermal run reported two variables
+        # missing. A warning that is always wrong is a warning nobody reads.
+        required.update({'T', 'fuh1', 'fu1'})
 
     if config.u_prime_sq_on:
         required.update({'u1', 'uu11'})
@@ -1510,9 +1512,15 @@ class HeatTransferCoefficient(Profiles):
         return float(values[self.cases.index(case)]) if len(values) > 1 else float(values[0])
 
     def _compute_h_profile(self, temp: np.ndarray, ref_temp: float, fuh: np.ndarray, fu: np.ndarray,
-                           heat_flux: float, y_coords: Optional[np.ndarray]) -> np.ndarray:
-        """Compute heat transfer coefficient profile from thermo variables."""
-        return np.asarray(op.compute_wall_heat_transfer_coeff(
+                           heat_flux: float, y_coords: Optional[np.ndarray],
+                           with_bulk_temperature: bool = False):
+        """Compute heat transfer coefficient profile from thermo variables.
+
+        With with_bulk_temperature, also returns the bulk temperature the
+        coefficient was formed from, which is what the Nusselt number has
+        to evaluate the conductivity at.
+        """
+        result = op.compute_wall_heat_transfer_coeff(
             heat_flux,
             temp,
             ref_temp,
@@ -1520,7 +1528,12 @@ class HeatTransferCoefficient(Profiles):
             fu,
             y_coords=y_coords,
             fluid=self.fluid,
-        ))
+            return_bulk_temperature=with_bulk_temperature,
+        )
+        if with_bulk_temperature:
+            coefficient, bulk_temp = result
+            return np.asarray(coefficient), np.asarray(bulk_temp)
+        return np.asarray(result)
 
     def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
         if not data_loader.has(case, 'T', timestep):
@@ -1582,17 +1595,28 @@ class NusseltNumber(HeatTransferCoefficient):
         ref_len = self._case_value(self.ref_length, case)
         ref_temp = self._case_value(self.ref_temp, case)
         y_coords = getattr(data_loader, 'y_coords', None)
-        h_profile = self._compute_h_profile(temp_data, ref_temp, fuh_data, fu_data, heat_flux, y_coords)
-        k_ref = float(self.fluid.thermal_conductivity(ref_temp)) # this is wrong, should be based on bulk temp
-        fluid_props = {'k': k_ref}
+        h_profile, bulk_temp = self._compute_h_profile(
+            temp_data, ref_temp, fuh_data, fu_data, heat_flux, y_coords,
+            with_bulk_temperature=True)
 
-        if np.ndim(h_profile) == 0:
-            nu_profile = np.asarray(op.compute_wall_Nusselt_number(float(h_profile), ref_len, fluid_props))
-        else:
-            nu_profile = np.asarray([
-                op.compute_wall_Nusselt_number(float(h), ref_len, fluid_props)
-                for h in np.ravel(h_profile)
-            ])
+        # Nu = h L / k(T_bulk). The conductivity used to be taken at the
+        # reference temperature, which for a heated supercritical case is
+        # not close: k moves sharply through the pseudo-critical region,
+        # and the bulk temperature is exactly what varies along a heated
+        # duct. The bulk temperature comes back from the coefficient
+        # calculation rather than being worked out again here.
+        k = np.asarray(self.fluid.thermal_conductivity(bulk_temp), dtype=float)
+        if np.ndim(k) and np.ndim(h_profile) and k.shape != np.shape(h_profile):
+            k = np.broadcast_to(k, np.shape(h_profile))
+
+        nu_profile = np.asarray(
+            op.compute_wall_Nusselt_number(h_profile, ref_len, {'k': k}))
+
+        outside = int(np.sum(~np.isfinite(k)))
+        if outside:
+            print(f"Note: {case}: the bulk temperature leaves "
+                  f"{self.fluid.name}'s valid range at {outside} of "
+                  f"{np.size(k)} stations; the Nusselt number is NaN there.")
 
         self.raw_results[(case, timestep)] = nu_profile
         return True

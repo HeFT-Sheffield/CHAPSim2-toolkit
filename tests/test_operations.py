@@ -244,3 +244,96 @@ def test_the_budget_reports_which_inputs_were_absent():
                                         np.linspace(-1.0, 1.0, 8))
     assert 'dudx11' in comp['_missing']
     assert 'u1' not in comp['_missing']
+
+
+# ---------------------------------------------------------------------------
+# Heat transfer coefficient and Nusselt number
+# ---------------------------------------------------------------------------
+#
+# The Nusselt number took the conductivity at the reference temperature,
+# with a comment in the source saying it should be the bulk. For a heated
+# supercritical case that is not a small error: k moves by a factor of five
+# through the pseudo-critical region, so Nu came out up to 77% wrong, and
+# wrongest exactly where the physics is interesting.
+
+import utils as ut
+
+
+def _heated_duct(nx=16, ny=32, T_wall=1.10, h_bulk=0.0, h_slope=4.0e-3):
+    """A z-averaged (ny, nx) field with the bulk enthalpy rising along x.
+
+    Everything is non-dimensional, as the solver writes it: T by the
+    reference temperature, h by (T0 cp0).
+    """
+    y = np.linspace(-1.0, 1.0, ny + 1)
+    yc = 0.5 * (y[:-1] + y[1:])
+    x_ramp = h_bulk + h_slope * np.arange(nx)
+
+    # Uniform mass flux, so the enthalpy-weighted bulk is just the ramp.
+    fu = np.ones((ny, nx))
+    fuh = np.broadcast_to(x_ramp, (ny, nx)).copy()
+    # Temperature: wall value at the ends, parabolic towards the middle.
+    profile = T_wall - 0.05 * (1.0 - yc ** 2)
+    temp = np.broadcast_to(profile[:, None], (ny, nx)).copy()
+    # Cell centres: the fields live at cell centres, so the integration
+    # coordinates have to as well.
+    return temp, fuh, fu, yc
+
+
+def test_the_bulk_temperature_comes_back_with_the_coefficient():
+    """So that the Nusselt number uses the same one, not its own."""
+    temp, fuh, fu, y = _heated_duct()
+    water = ut.get_fluid_properties('scp_water')
+    T0 = 645.15
+    coeff, bulk = op.compute_wall_heat_transfer_coeff(
+        1.0, temp, T0, fuh, fu, y_coords=y, fluid=water,
+        return_bulk_temperature=True)
+    assert np.shape(bulk) == np.shape(coeff)
+    # The bulk enthalpy ramp inverted back to a temperature, rising with x.
+    assert np.all(np.diff(bulk) > 0)
+    assert abs(bulk[0] - T0) < 1e-6          # h = 0 is the reference state
+
+
+def test_without_asking_the_coefficient_is_returned_alone():
+    temp, fuh, fu, y = _heated_duct()
+    water = ut.get_fluid_properties('scp_water')
+    coeff = op.compute_wall_heat_transfer_coeff(
+        1.0, temp, 645.15, fuh, fu, y_coords=y, fluid=water)
+    assert np.ndim(coeff) == 1
+
+
+def test_no_fluid_is_an_error_not_a_silent_fallback_to_lithium():
+    """It used to default to lithium, so a water case got a lithium
+    conductivity with nothing said."""
+    temp, fuh, fu, y = _heated_duct()
+    try:
+        op.compute_wall_heat_transfer_coeff(
+            1.0, temp, 645.15, fuh, fu, y_coords=y, fluid=None)
+    except ValueError as exc:
+        assert 'fluid' in str(exc)
+    else:
+        raise AssertionError('a missing fluid was filled in silently')
+
+
+def test_the_nusselt_number_takes_a_conductivity_profile():
+    h = np.array([2.0, 4.0, 6.0])
+    k = np.array([1.0, 2.0, 3.0])
+    nu = op.compute_wall_Nusselt_number(h, 0.5, {'k': k})
+    assert np.allclose(nu, h * 0.5 / k)
+
+
+def test_a_scalar_conductivity_still_works():
+    assert abs(op.compute_wall_Nusselt_number(4.0, 0.5, {'k': 2.0}) - 1.0) < 1e-12
+
+
+def test_using_the_bulk_conductivity_changes_the_answer_substantially():
+    """The reason the fix matters. Across the pseudo-critical region of
+    supercritical water, k falls by a factor of five, so a Nusselt number
+    formed with k at the reference temperature is out by tens of percent."""
+    water = ut.get_fluid_properties('scp_water')
+    T0 = 645.15
+    k_ref = water.thermal_conductivity(T0)
+    # A bulk temperature on the far side of the peak.
+    k_bulk = water.thermal_conductivity(700.0)
+    assert abs(k_bulk / k_ref - 1.0) > 0.5, \
+        'the two conductivities should differ sharply here'

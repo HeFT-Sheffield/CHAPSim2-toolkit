@@ -90,6 +90,12 @@ every u_τ-normalised profile with nothing on the plot to show for it.
 The bulk velocity and the wall heat flux are outcomes of a run rather than
 inputs to it, so they are not in the input file and are still given by hand.
 
+The Nusselt number evaluates the conductivity at the bulk temperature, which
+varies along a heated duct, not at the reference temperature. For
+supercritical water that is the difference between a right answer and one up
+to 77% out, since `k` falls by a factor of five through the pseudo-critical
+region.
+
 Loading a case also checks that the data is the data the input file describes,
 by rebuilding the mesh from `ncx/ncy/ncz`, `istret` and `rstret` and comparing
 it with the grid the solver wrote. An input file edited after the run, or
@@ -122,12 +128,15 @@ remember which. Enthalpy inverts too — `temperature_from_enthalpy` is a port
 of the solver's `ftp_refresh_thermal_properties_from_H`, which is how a bulk
 temperature is recovered from the bulk enthalpy in the data.
 
-Where the solver stops the run — a temperature outside the fluid's range —
-the toolkit returns NaN instead, so one bad cell leaves a gap rather than
-costing the whole figure. One limit is worth knowing: the PbLi-17 viscosity
-cubic crosses zero near 859 K, although the solver treats PbLi as valid up
-to 1943 K. Above that the toolkit returns NaN and warns, rather than
-carrying a negative viscosity into a Prandtl number.
+Enthalpy coefficients are derived from the heat-capacity ones rather than
+transcribed, as the solver now does, so that `dH/dT = Cp` holds exactly —
+checked numerically for every fluid. The valid range is melting to boiling
+except where a shipped fit is known not to reach boiling: PbLi-17 is capped
+at 850 K, below the root of its own viscosity cubic.
+
+Where the solver stops the run — a temperature outside that range — the
+toolkit returns NaN instead, so one bad cell leaves a gap rather than
+costing the whole figure.
 
 ## Scripts:
 
