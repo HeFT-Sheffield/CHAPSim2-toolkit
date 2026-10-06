@@ -55,7 +55,12 @@ setup(
             "pyvista>=0.32.0",  # 3D visualisation: turb_visu.py and the GUI tab
         ],
         "gui": [
-            "ttkbootstrap>=1.0.0",  # gui.py; the scripts do not need it
+            # gui.py calls ttk.Window(theme=...) and uses the pydata themes,
+            # neither of which exists before 2.0 - on an older one the window
+            # cannot be constructed at all. ttkbootstrap 2 needs Python 3.10,
+            # so the GUI has a higher floor than the rest of the toolkit; the
+            # scripts still run on 3.8.
+            "ttkbootstrap>=2.0.0",
         ],
         "dev": [
             "pytest>=6.0",

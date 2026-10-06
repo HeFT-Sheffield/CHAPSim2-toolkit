@@ -23,6 +23,10 @@ Then run the scripts in place, e.g. `python gui.py` or `python turb_stats.py`.
 `pyvista` only by the 3D visualisation; the post-processing scripts need just
 numpy, matplotlib and tqdm.
 
+The GUI needs **Python 3.10 or newer**, because it needs ttkbootstrap 2 — on
+ttkbootstrap 1 the main window cannot be constructed at all. The scripts have
+no such floor and run on 3.8.
+
 ## CHAPSim2 output it reads:
 
 The toolkit targets the current CHAPSim2 output layout:

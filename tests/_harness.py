@@ -457,7 +457,14 @@ def gui_app():
     _require_gui()
     import gui
     _reset_tk_globals()
-    app = gui.App()
+    try:
+        app = gui.App()
+    except Exception:
+        # A half-built window still owns an interpreter, and leaving it as
+        # the default root turns one failure into a failure in every test
+        # that follows. Clear up before the error propagates.
+        _reset_tk_globals()
+        raise
     app.withdraw()
     try:
         yield app

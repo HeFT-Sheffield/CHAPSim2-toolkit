@@ -10,5 +10,5 @@ dependencies:
   - tqdm>=4.60.0
   - pip
   - pip:
-      - ttkbootstrap>=1.0.0
+      - ttkbootstrap>=2.0.0
       - -e .
