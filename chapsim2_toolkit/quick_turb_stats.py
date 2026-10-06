@@ -21,6 +21,7 @@ mpl.rcParams.update({
 })
 
 # Import the shared XDMF reader from utils
+from chapsim2_toolkit import provenance as prov
 from chapsim2_toolkit import utils as ut
 
 # Enable tab completion for path input
@@ -354,7 +355,8 @@ def plot_results(results, y, half_channel=False, save_path=None):
             axs1[row, col].set_visible(False)
 
         if save_path:
-            fig1.savefig(os.path.join(save_path, 'profiles.png'), dpi=300, bbox_inches='tight')
+            fig1.savefig(os.path.join(save_path, 'profiles.png'), dpi=300, bbox_inches='tight',
+                         metadata=prov.figure_metadata('png'))
             print(f"Saved profiles.png")
 
     # Plot Reynolds stresses
@@ -402,7 +404,8 @@ def plot_results(results, y, half_channel=False, save_path=None):
             axs2[row, col].set_visible(False)
 
         if save_path:
-            fig2.savefig(os.path.join(save_path, 'reynolds_stresses.png'), dpi=300, bbox_inches='tight')
+            fig2.savefig(os.path.join(save_path, 'reynolds_stresses.png'), dpi=300, bbox_inches='tight',
+                         metadata=prov.figure_metadata('png'))
             print(f"Saved reynolds_stresses.png")
 
     return fig1 if profiles else None, fig2 if re_stresses else None

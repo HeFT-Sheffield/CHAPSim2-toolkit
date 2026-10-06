@@ -2,6 +2,10 @@ name: chapsim2-toolkit
 channels:
   - conda-forge
   - defaults
+# The numerical stack comes from conda so that its optimised builds are
+# used; everything else, including the toolkit itself, comes from pip and
+# therefore from pyproject.toml. The floors below duplicate pyproject's on
+# purpose - conda cannot read it - and a test checks that they agree.
 dependencies:
   - python>=3.8
   - numpy>=1.20.0
@@ -10,5 +14,4 @@ dependencies:
   - tqdm>=4.60.0
   - pip
   - pip:
-      - ttkbootstrap>=2.0.0
-      - -e .
+      - -e .[gui,3d]

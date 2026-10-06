@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chapsim2-toolkit"
-version = "0.2.0"
+# Single-sourced from chapsim2_toolkit/__init__.py, so a release cannot
+# ship a package whose metadata and whose __version__ disagree.
+dynamic = ["version"]
 description = "Post-processing and pre-processing toolkit for the CHAPSim2 DNS solver"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -54,6 +56,9 @@ chapsim2-monitor = "chapsim2_toolkit.monitor_points:main"
 chapsim2-mesh = "chapsim2_toolkit.mesh_analysis:main"
 chapsim2-quickstats = "chapsim2_toolkit.quick_turb_stats:main"
 chapsim2-gui = "chapsim2_toolkit.gui:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "chapsim2_toolkit.__version__" }
 
 [tool.setuptools]
 # zip_safe equivalent: the reference tables are read with __file__-relative

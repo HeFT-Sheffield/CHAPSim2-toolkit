@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
+
+from chapsim2_toolkit import provenance as prov
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import sys
@@ -383,7 +385,8 @@ def plot_panels(panels, time, title, out_path, display, auto_ylim, avg_window):
     axes[-1].set_xlabel('Time')
     fig.suptitle(title, fontsize=14)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=300, bbox_inches='tight')
+    fig.savefig(out_path, dpi=300, bbox_inches='tight',
+                metadata=prov.figure_metadata(out_path.rsplit('.', 1)[-1]))
     if display:
         plt.show()
     plt.close(fig)

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
+
+from chapsim2_toolkit import provenance as prov
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -276,7 +278,8 @@ def plot_normalized_properties(df, fluid_name='Fluid', save_fig=False, filename=
     fig.tight_layout()
 
     if save_fig:
-        fig.savefig(filename, dpi=150)
+        fig.savefig(filename, dpi=150,
+                    metadata=prov.figure_metadata(filename.rsplit('.', 1)[-1]))
         print(f"Plot saved to {filename}")
 
     return fig

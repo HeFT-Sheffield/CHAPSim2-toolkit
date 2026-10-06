@@ -1,6 +1,12 @@
-numpy>=1.20.0
-matplotlib>=3.3.0
-pandas>=1.2.0
-tqdm>=4.60.0
-ttkbootstrap>=2.0.0
-pyvista
+# Dependencies are declared once, in pyproject.toml. This file installs
+# them - and the toolkit itself, editable - so that the familiar command
+# keeps working and there is no second list to drift:
+#
+#     pip install -r requirements.txt
+#
+# For a cluster where the GUI and 3D rendering are not wanted, install the
+# core alone instead:
+#
+#     pip install -e .
+#
+-e .[gui,3d]

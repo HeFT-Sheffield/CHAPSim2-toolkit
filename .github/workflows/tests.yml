@@ -71,7 +71,7 @@ jobs:
           for module in utils operations turb_stats slice monitor_points \
                         mesh_analysis quick_turb_stats help_content \
                         stitch_domains fluid_properties case_consistency \
-                        thermal_BC_calc; do
+                        thermal_BC_calc provenance; do
             python -c "import chapsim2_toolkit.$module" || exit 1
           done
           # gui needs ttkbootstrap, which is not installable on every version

@@ -27,6 +27,8 @@ import sys
 
 import numpy as np
 
+from chapsim2_toolkit import provenance as prov
+
 # ====================================================================================================================================================
 # CHAPSim2 parameter enumerations (src/modules.f90)
 # ====================================================================================================================================================
@@ -1766,7 +1768,8 @@ def plot_mesh_distribution(cfg, yp, res, save_path):
 
     fig = plt.figure(figsize=(9, 8))
     draw_mesh_distribution(fig, cfg, yp, res)
-    fig.savefig(save_path, dpi=300, bbox_inches='tight')
+    fig.savefig(save_path, dpi=300, bbox_inches='tight',
+                metadata=prov.figure_metadata(save_path.rsplit('.', 1)[-1]))
     plt.close(fig)
 
     print(f"\nSaved mesh distribution plot to: {save_path}")

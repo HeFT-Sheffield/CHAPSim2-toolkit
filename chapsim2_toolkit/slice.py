@@ -19,6 +19,7 @@ mpl.rcParams.update({
 })
 
 # Import the shared XDMF reader from utils
+from chapsim2_toolkit import provenance as prov
 from chapsim2_toolkit import utils as ut
 from chapsim2_toolkit import operations as op
 
@@ -607,7 +608,8 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
     print(f"  Mean: {np.nanmean(slice_data):.6e}")
 
     if save_path:
-        fig.savefig(save_path, dpi=1000, bbox_inches='tight')
+        fig.savefig(save_path, dpi=1000, bbox_inches='tight',
+                    metadata=prov.figure_metadata(save_path.rsplit('.', 1)[-1]))
         print(f"Saved: {save_path}")
 
     if display:
@@ -775,7 +777,8 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
     fig.suptitle(f'2D Slices {slice_info}', fontsize=12)
 
     if save_path:
-        fig.savefig(save_path, dpi=1000, bbox_inches='tight', pad_inches=0.5)
+        fig.savefig(save_path, dpi=1000, bbox_inches='tight', pad_inches=0.5,
+                    metadata=prov.figure_metadata(save_path.rsplit('.', 1)[-1]))
         print(f"Saved: {save_path}")
 
     if display:

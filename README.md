@@ -160,6 +160,31 @@ Where the solver stops the run — a temperature outside that range — the
 toolkit returns NaN instead, so one bad cell leaves a gap rather than
 costing the whole figure.
 
+## Figure provenance:
+
+Every figure the toolkit saves records what made it, in the file's own
+metadata — the toolkit version, the git revision and whether the working tree
+was dirty, the cases and timesteps, the `config.py` used, and the time. PNG
+carries it in tEXt chunks and PDF in the document info dictionary, so nothing
+is drawn on the plot and nothing can be separated from it.
+
+```bash
+python -m chapsim2_toolkit.provenance figure.png
+```
+```
+figure.png:
+  cases            pipe_iso_periodic
+  config           /scratch/me/run12/config.py
+  created          2026-10-06T14:03:54+01:00
+  git_dirty        yes
+  git_revision     85592c6
+  toolkit          CHAPSim2-toolkit 0.2.0 (85592c6-dirty)
+```
+
+`git_dirty` is the field that matters: a commit does not describe the code
+that ran if the tree was modified, so a figure marked dirty cannot be
+regenerated from that revision alone.
+
 ## Scripts:
 
 **gui.py**: This launches a user interface for turbulence statistics, slice visualisation, monitoring points, 3D visualisation and mesh analysis, run 'python gui.py'. Choose a case once in the Case bar at the top and every tab is set up from it — each needs the case in a different form and works that out for itself, including which data types and timesteps exist and everything the run recorded in its `input_chapsim.ini` (see above). A Help tab covers each tab and the output formats. The Mesh Analysis tab is interactive: load an input_chapsim.ini (or start from the built-in template), adjust cell counts, stretching and flow parameters with sliders, and the resolution report, headline metrics and spacing plot update live. The adjusted settings can be written back out as an input file. This will likely not work on HPCs, use interactive script input instead (run each script individually).

@@ -23,6 +23,7 @@ mpl.rcParams.update({
 
 # import modules --------------------------------------------------------------------------------------------------------------------------------------
 from chapsim2_toolkit import operations as op
+from chapsim2_toolkit import provenance as prov
 from chapsim2_toolkit import utils as ut
 
 # =====================================================================================================================================================
@@ -152,6 +153,9 @@ class Config:
     two_point_corr_x_coords: str = ''
     two_point_corr_max_sep: int = 0          # in cells; 0 -> half the spanwise domain
     two_point_corr_mean_mode: str = 't_avg'  # 't_avg' or 'snapshot'
+    #: Set by load_config() to the file it read, so a saved figure can
+    #: record which settings produced it.
+    config_path: str = ''
     # Set once apply_case_inputs has run, so a caller that applies the case
     # settings itself and then builds a loader is not told about them twice.
     case_inputs_applied: bool = False
@@ -4077,10 +4081,17 @@ class TurbulencePlotter:
         else:
             filename = f'turb_stats_plot{suffix}.png' if suffix else 'turb_stats_plot.png'
 
+        # What drew the figure, written into the figure. A plot that ends
+        # up in a paper has to be traceable to the code and the case that
+        # made it, and a PNG keeps no record of either by itself.
+        metadata = prov.figure_metadata(
+            filename.rsplit('.', 1)[-1], config=self.config,
+            config_path=getattr(self.config, 'config_path', None))
+
         for directory in self.figure_output_dirs():
             os.makedirs(directory, exist_ok=True)
             output_path = os.path.join(directory, filename)
-            fig.savefig(output_path, **self.SAVEFIG_KWARGS)
+            fig.savefig(output_path, metadata=metadata, **self.SAVEFIG_KWARGS)
             print(f'Figure saved to {output_path}')
 
     def figure_output_dirs(self) -> List[str]:
@@ -4178,7 +4189,11 @@ def load_config(path: str = None, quiet: bool = False) -> Config:
             print(f'  This is the toolkit\'s own template, not one of yours. '
                   f'Start your own with:\n'
                   f'    cp {BUNDLED_CONFIG} config.py')
-    return Config.from_module(module)
+
+    config = Config.from_module(module)
+    # Remembered so a saved figure can name the settings that produced it.
+    config.config_path = resolved
+    return config
 
 
 def main(argv: List[str] = None):
