@@ -13,8 +13,8 @@ import contextlib
 import tempfile
 import types
 
-import turb_stats as ts
-from turb_stats import Config
+from chapsim2_toolkit import turb_stats as ts
+from chapsim2_toolkit.turb_stats import Config
 
 from test_mesh_analysis import CASE_INPUT
 

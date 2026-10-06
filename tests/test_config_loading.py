@@ -16,7 +16,7 @@ import contextlib
 import os
 import tempfile
 
-import turb_stats as ts
+from chapsim2_toolkit import turb_stats as ts
 
 
 @contextlib.contextmanager

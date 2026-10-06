@@ -15,11 +15,11 @@ import numpy as np
 
 from _harness import build_cartesian_case
 
-import utils as ut
+from chapsim2_toolkit import utils as ut
 
 
 def _stitch(tmp, x_offset=0.0):
-    from stitch_domains import stitch_domains
+    from chapsim2_toolkit.stitch_domains import stitch_domains
 
     a = build_cartesian_case(tmp, name='dom1')
     b = build_cartesian_case(tmp, name='dom2')

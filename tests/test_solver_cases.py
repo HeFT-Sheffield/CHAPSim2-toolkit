@@ -17,9 +17,9 @@ import numpy as np
 
 from _harness import skip, solver_tests_dir
 
-import mesh_analysis as ma
-import operations as op
-import utils as ut
+from chapsim2_toolkit import mesh_analysis as ma
+from chapsim2_toolkit import operations as op
+from chapsim2_toolkit import utils as ut
 
 
 def _cases():
@@ -207,7 +207,7 @@ def test_periodicity_matches_the_case_names():
     """Read from each case's own input file and checked against what the
     name says it is - a '_periodic' case is streamwise periodic, an
     '_inout' case is not, and no pipe is periodic in its radius."""
-    import mesh_analysis as ma
+    from chapsim2_toolkit import mesh_analysis as ma
 
     checked, failures = 0, []
     for case in _require_cases():
@@ -231,7 +231,7 @@ def test_periodicity_matches_the_case_names():
 def test_averaging_a_non_periodic_direction_is_reported():
     """Averaging x on an inlet/outlet case mixes the inlet with the outlet.
     It must not pass quietly."""
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
 
     inout = next((c for c in _require_cases()
                   if '_inout' in os.path.basename(c)
@@ -253,7 +253,7 @@ def test_averaging_a_non_periodic_direction_is_reported():
 def test_a_group_absent_at_a_timestep_is_reported():
     """Thermo is written less often than flow; a dropped temperature
     profile should say why."""
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
 
     target = None
     for case in _require_cases():
@@ -283,7 +283,7 @@ def test_a_group_absent_at_a_timestep_is_reported():
 def test_mhd_statistics_run_on_a_real_mhd_case():
     """MHD was an advertised feature that had never been run end to end;
     the body-force gradients raised AxisError on tsp_avg plane data."""
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
 
     root = solver_tests_dir()
     if root is None:
@@ -312,7 +312,7 @@ def test_mhd_statistics_run_on_a_real_mhd_case():
 
 
 def test_averaging_over_timesteps_is_the_mean_of_them():
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
 
     root = solver_tests_dir()
     if root is None:

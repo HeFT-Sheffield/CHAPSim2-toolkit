@@ -13,7 +13,7 @@ import numpy as np
 
 from _harness import build_cartesian_case, write_monitor_files
 
-import monitor_points as mp
+from chapsim2_toolkit import monitor_points as mp
 
 
 def _monitor(tmp, thermo=True):

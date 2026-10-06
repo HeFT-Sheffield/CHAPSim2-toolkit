@@ -10,7 +10,7 @@ import tempfile
 
 import numpy as np
 
-import mesh_analysis as ma
+from chapsim2_toolkit import mesh_analysis as ma
 
 
 MODERN = """\

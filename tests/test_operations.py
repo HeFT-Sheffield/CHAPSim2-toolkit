@@ -7,7 +7,7 @@ several times too small and dragged every normalised profile with it.
 
 import numpy as np
 
-import operations as op
+from chapsim2_toolkit import operations as op
 
 
 def _channel(ny=48):
@@ -131,7 +131,7 @@ def test_interpolate_wall_point_extrapolates_to_each_end():
 # ---------------------------------------------------------------------------
 
 def _plotter(**overrides):
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
 
     class _Module:
         pass
@@ -149,7 +149,7 @@ def test_dimensionless_statistics_are_not_labelled_as_normalised():
     """The value and label exclusion lists were separate and drifted: the
     turbulent Prandtl number was computed unnormalised but captioned
     Pr_t/u_tau^2."""
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
     plotter = _plotter()
     for name in ts.NOT_NORMALISED_BY_U_TAU_SQ:
         label = plotter._get_stat_ylabel(name, name)
@@ -256,7 +256,7 @@ def test_the_budget_reports_which_inputs_were_absent():
 # through the pseudo-critical region, so Nu came out up to 77% wrong, and
 # wrongest exactly where the physics is interesting.
 
-import utils as ut
+from chapsim2_toolkit import utils as ut
 
 
 def _heated_duct(nx=16, ny=32, T_wall=1.10, h_bulk=0.0, h_slope=4.0e-3):

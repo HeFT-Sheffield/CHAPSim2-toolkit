@@ -6,19 +6,36 @@ A python post-processing and toolkit program based on NumPy and Matplotlib for D
 
 ## Install:
 
-The toolkit is run from a checkout — the modules sit at the top level, so an
-install places only metadata and does not put them on the import path. There is
-no `chapsim2-*` command and nothing becomes importable; `setup.py` exists to
-pull in the dependencies and for nothing else. What you need is those:
+The code lives in the `chapsim2_toolkit/` package. It works either installed
+or straight from a clone — both are supported, and the shared group checkout on
+a cluster is expected to be the second.
 
 ```bash
-pip install -r requirements.txt          # everything, including the GUI and 3D
-pip install numpy matplotlib tqdm        # enough for the scripts on a cluster
-conda env create -f environment.yml      # or a conda environment
-conda activate chapsim2-toolkit
+pip install -e .            # from a clone: editable, so git pull keeps working
+pip install .[gui,3d]       # or a normal install, with the GUI and 3D extras
+pip install -r requirements.txt   # or just the dependencies, no install
+conda env create -f environment.yml
 ```
 
-Then run the scripts in place, e.g. `python gui.py` or `python turb_stats.py`.
+Installed, there are console scripts and module entry points:
+
+```bash
+chapsim2-turbstats --config config.py
+chapsim2-gui
+python -m chapsim2_toolkit.turb_stats --config config.py
+```
+
+From a clone with nothing installed, the old commands work unchanged — the
+scripts at the top level are thin wrappers onto the package:
+
+```bash
+python gui.py
+python /path/to/CHAPSim2-toolkit/turb_stats.py     # from your data directory
+```
+
+Prefer `python -m chapsim2_toolkit.<script>` where you can: it puts your
+working directory first on `sys.path`, which is what finds the `config.py`
+sitting beside your data.
 
 `pandas` is used only by thermal_BC_calc.py, `ttkbootstrap` only by gui.py and
 `pyvista` only by the 3D visualisation; the post-processing scripts need just

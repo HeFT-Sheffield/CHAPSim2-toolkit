@@ -18,7 +18,7 @@ import numpy as np
 
 from _harness import skip, solver_tests_dir, build_cartesian_case
 
-import case_consistency as cc
+from chapsim2_toolkit import case_consistency as cc
 
 
 CASE = ('functional', 'MHD_channel_scp_inout_Tw')

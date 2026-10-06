@@ -7,7 +7,7 @@ import numpy as np
 
 from _harness import build_cartesian_case, build_cylindrical_case
 
-import utils as ut
+from chapsim2_toolkit import utils as ut
 
 
 def test_fields_read_back_exactly():

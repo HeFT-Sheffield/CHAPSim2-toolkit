@@ -32,8 +32,8 @@ import numpy as np
 
 # Add parent dir so we can import operations / turb_stats
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import operations as op
-from turb_stats import TwoPointCorrelationComputer
+from chapsim2_toolkit import operations as op
+from chapsim2_toolkit.turb_stats import TwoPointCorrelationComputer
 
 # ── synthetic case definition ──────────────────────────────────────────
 NZ, NY, NX = 48, 17, 12

@@ -455,7 +455,7 @@ def gui_app():
     down this way is also what exercises it.
     """
     require_gui()
-    import gui
+    from chapsim2_toolkit import gui
     _reset_tk_globals()
     try:
         app = gui.App()

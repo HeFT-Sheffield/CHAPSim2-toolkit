@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chapsim2-toolkit"
+version = "0.2.0"
+description = "Post-processing and pre-processing toolkit for the CHAPSim2 DNS solver"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+maintainers = [{ name = "Wei Wang", email = "wei.wang@stfc.ac.uk" }]
+authors = [{ name = "Alex Old" }]
+keywords = [
+    "computational fluid dynamics", "direct numerical simulation",
+    "turbulence statistics", "post-processing", "CHAPSim2",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "matplotlib>=3.3.0",
+    "pandas>=1.2.0",
+    "tqdm>=4.60.0",
+]
+
+[project.optional-dependencies]
+# gui.py calls ttk.Window(theme=...) and uses the pydata themes, neither of
+# which exists before ttkbootstrap 2.0; on an older one the main window
+# cannot be constructed at all. ttkbootstrap 2 needs Python 3.10, so the GUI
+# has a higher floor than the rest of the toolkit.
+gui = ["ttkbootstrap>=2.0.0"]
+3d = ["pyvista>=0.32.0"]
+dev = ["pytest>=6.0", "pytest-cov>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/weiwangstfc/CHAPSim2-toolkit"
+"Original repository" = "https://github.com/AlexOld1/CHAPSim2_python_toolkit"
+"CHAPSim2 solver" = "https://github.com/CHAPSim/CHAPSim2"
+
+[project.scripts]
+# Note: a console script puts its own bin/ directory on sys.path[0], not your
+# working directory. turb_stats loads config.py by path rather than by import
+# precisely so that this works; see chapsim2_toolkit.turb_stats.find_config.
+chapsim2-turbstats = "chapsim2_toolkit.turb_stats:main"
+chapsim2-slice = "chapsim2_toolkit.slice:main"
+chapsim2-monitor = "chapsim2_toolkit.monitor_points:main"
+chapsim2-mesh = "chapsim2_toolkit.mesh_analysis:main"
+chapsim2-quickstats = "chapsim2_toolkit.quick_turb_stats:main"
+chapsim2-gui = "chapsim2_toolkit.gui:main"
+
+[tool.setuptools]
+# zip_safe equivalent: the reference tables are read with __file__-relative
+# paths, which needs a real directory on disk rather than a zipimport.
+zip-safe = false
+
+[tool.setuptools.packages.find]
+include = ["chapsim2_toolkit*"]
+
+[tool.setuptools.package-data]
+# The NIST property tables and the published reference datasets. Without
+# these an installed toolkit cannot evaluate supercritical properties or
+# draw a reference curve.
+chapsim2_toolkit = ["Reference_Data/**/*", "config.py"]

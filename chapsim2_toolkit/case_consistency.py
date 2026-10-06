@@ -26,8 +26,8 @@ import os
 
 import numpy as np
 
-import mesh_analysis as ma
-import utils as ut
+from chapsim2_toolkit import mesh_analysis as ma
+from chapsim2_toolkit import utils as ut
 
 __all__ = ['check_case_consistency', 'describe_inconsistencies']
 

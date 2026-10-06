@@ -16,7 +16,7 @@ import numpy as np
 
 from _harness import skip, solver_tests_dir
 
-import fluid_properties as fp
+from chapsim2_toolkit import fluid_properties as fp
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +499,7 @@ def test_every_property_is_si():
 
 def test_the_solver_s_own_ifluid_tokens_are_accepted():
     """read_case_parameters hands these straight through."""
-    import mesh_analysis as ma
+    from chapsim2_toolkit import mesh_analysis as ma
     for index, key in ma.IFLUID_TO_TOOLKIT.items():
         assert fp.get_fluid_properties(key) is not None
 
@@ -562,7 +562,7 @@ def test_a_non_dimensional_enthalpy_is_dimensionalised_first():
 
 def test_the_deprecated_class_names_still_build_the_right_fluid():
     """thermal_BC_calc and older scripts import these by name."""
-    import utils as ut
+    from chapsim2_toolkit import utils as ut
     assert ut.LiquidSodiumProperties().name == 'sodium'
     assert ut.LiquidLithiumProperties().name == 'lithium'
     assert ut.LiquidPbLiProperties().name == 'pbli'

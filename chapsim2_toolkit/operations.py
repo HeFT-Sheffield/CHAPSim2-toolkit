@@ -1,5 +1,5 @@
 import numpy as np
-import utils
+from chapsim2_toolkit import utils
 
 # np.trapz was renamed np.trapezoid in NumPy 2.0 and the old name is deprecated.
 # Bind whichever this interpreter has so the toolkit runs on both.

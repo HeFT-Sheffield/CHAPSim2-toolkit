@@ -12,7 +12,7 @@ import numpy as np
 
 from _harness import build_cartesian_case
 
-import utils as ut
+from chapsim2_toolkit import utils as ut
 
 
 def test_every_case_subdirectory_resolves_to_the_same_case():

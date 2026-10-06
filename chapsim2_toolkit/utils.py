@@ -95,7 +95,7 @@ def get_fluid_properties(medium, case_dir=None):
     Pass case_dir for a supercritical case so the table the run used is
     the table the post-processing uses.
     """
-    from fluid_properties import get_fluid_properties as _get
+    from chapsim2_toolkit.fluid_properties import get_fluid_properties as _get
     return _get(medium, case_dir=case_dir)
 
 

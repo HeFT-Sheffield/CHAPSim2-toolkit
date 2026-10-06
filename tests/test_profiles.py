@@ -12,7 +12,7 @@ import numpy as np
 
 from _harness import build_cartesian_case
 
-import utils as ut
+from chapsim2_toolkit import utils as ut
 
 
 def test_profile_bundle_columns_are_read_from_the_header():

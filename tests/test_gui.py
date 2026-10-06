@@ -31,7 +31,7 @@ def _gui():
     the dependency reports an error where it should report a skip.
     """
     require_gui()
-    import gui
+    from chapsim2_toolkit import gui
     return gui
 
 
@@ -175,7 +175,7 @@ def test_a_case_with_no_input_file_leaves_the_controls_alone():
 
 def test_the_widgets_build_a_config_the_post_processing_accepts():
     gui = _gui()
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
     case = _solver_case(MHD_CASE)
     with _tab(gui.TurbStatsTab) as tab:
         tab.adopt_case(case)
@@ -261,7 +261,7 @@ def test_settings_survive_a_round_trip_through_a_config_file():
 
 def test_the_config_it_writes_is_one_turb_stats_can_read():
     gui = _gui()
-    import turb_stats as ts
+    from chapsim2_toolkit import turb_stats as ts
     import importlib.util
     case = _solver_case(MHD_CASE)
     with _tab(gui.TurbStatsTab) as tab:
@@ -285,7 +285,7 @@ def test_the_config_it_writes_is_one_turb_stats_can_read():
 
 def test_the_slice_tab_finds_the_timesteps_in_a_case():
     gui = _gui()
-    import utils as ut
+    from chapsim2_toolkit import utils as ut
     case = _solver_case(MHD_CASE)
     with _tab(gui.SliceTab) as tab:
         tab.adopt_case(case)
@@ -350,7 +350,7 @@ def test_the_mesh_tab_ignores_a_case_with_no_input_file():
 
 def test_every_help_topic_renders():
     gui = _gui()
-    import help_content
+    from chapsim2_toolkit import help_content
     with _tab(gui.HelpTab) as tab:
         for index, (title, _) in enumerate(help_content.TOPICS):
             tab._show(index)
@@ -361,7 +361,7 @@ def test_every_help_topic_renders():
 def test_a_help_topic_can_be_opened_by_name():
     """The list title and the body heading differ, so match on the body."""
     gui = _gui()
-    import help_content
+    from chapsim2_toolkit import help_content
     wanted = dict(help_content.TOPICS)['Troubleshooting']
     with _tab(gui.HelpTab) as tab:
         tab.show_topic('Troubleshooting')

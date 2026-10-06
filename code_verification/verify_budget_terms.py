@@ -14,7 +14,7 @@ from pathlib import Path
 
 # Add parent dir so we can import operations
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import operations as op
+from chapsim2_toolkit import operations as op
 
 # ── paths & constants ──────────────────────────────────────────────────
 DATA   = Path(__file__).parent / "Chan180_FD2_all"

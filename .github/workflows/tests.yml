@@ -72,12 +72,49 @@ jobs:
                         mesh_analysis quick_turb_stats help_content \
                         stitch_domains fluid_properties case_consistency \
                         thermal_BC_calc; do
-            python -c "import $module" || exit 1
+            python -c "import chapsim2_toolkit.$module" || exit 1
           done
           # gui needs ttkbootstrap, which is not installable on every version
           # in the matrix. Checked where it is.
-          python -c "import ttkbootstrap" 2>/dev/null && python -c "import gui" || \
-            echo "skipped gui: ttkbootstrap not installed on this Python"
+          python -c "import ttkbootstrap" 2>/dev/null \
+            && python -c "import chapsim2_toolkit.gui" \
+            || echo "skipped gui: ttkbootstrap not installed on this Python"
+
+      - name: Build a wheel and install it in a clean environment
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install dist/*.whl
+
+      - name: Check the installed package works from outside the repository
+        env:
+          MPLBACKEND: Agg
+        # The failure this catches is data files that do not ship: the NIST
+        # tables and the reference datasets are read by __file__-relative
+        # path, which works in a checkout whether or not they are packaged.
+        run: |
+          mkdir -p /tmp/elsewhere && cd /tmp/elsewhere
+          /tmp/wheeltest/bin/python -c "
+          from chapsim2_toolkit import fluid_properties as fp, turb_stats as ts
+          import os
+          w = fp.get_fluid_properties('scp_water')
+          assert w.T_min == 573.15, 'NIST water table did not ship'
+          assert os.path.isdir(ts.ReferenceData._REF_DATA_DIR), 'Reference_Data did not ship'
+          assert os.path.isfile(ts.BUNDLED_CONFIG), 'config template did not ship'
+          print('installed package reads its data from', os.path.dirname(w.path))
+          "
+          /tmp/wheeltest/bin/chapsim2-turbstats --help > /dev/null
+          /tmp/wheeltest/bin/python -m chapsim2_toolkit.turb_stats --help > /dev/null
+
+      - name: Check the checkout workflow still works without installing
+        env:
+          MPLBACKEND: Agg
+        # python turb_stats.py has to keep working for people running from a
+        # clone on a cluster, which is most of the use.
+        run: |
+          python turb_stats.py --help > /dev/null
+          python -c "import runpy, sys; sys.argv=['mesh_analysis.py']" 
 
       - name: Check the bundled runner works without pytest
         env:
