@@ -1,5 +1,11 @@
 # Configuration file for turb_stats script ============================================================================================================
 #
+# This is the toolkit's own copy, used as a template and as the fallback when
+# a run supplies nothing else. Copy it next to your data and edit that copy:
+# turb_stats uses ./config.py from the directory you run it in, or whatever
+# --config names, and prints which one it used. Editing this file in a shared
+# checkout changes everybody's defaults.
+#
 # Settings left as None are read from each case's own input_chapsim.ini when
 # the case is loaded: the Reynolds number, the reference temperature and
 # length, the geometry, the working fluid, whether heat transfer and MHD were

@@ -4124,11 +4124,75 @@ class TurbulencePlotter:
 # MAIN EXECUTION
 # =====================================================================================================================================================
 
-def main():
+#: Where the toolkit's own config.py lives, used as the template and as
+#: the fallback when a run does not supply one.
+BUNDLED_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'config.py')
+
+
+def find_config(path: str = None) -> str:
+    """The config.py a run should use, in order of precedence.
+
+    1. an explicit path, from --config;
+    2. config.py in the working directory;
+    3. the one shipped with the toolkit.
+
+    The second is the point of this. `import config` picked whichever
+    config.py was first on sys.path, which for `python /toolkit/turb_stats.py`
+    is the toolkit's own - so a config.py written next to a case was
+    silently ignored and the shipped defaults used instead. With more than
+    one person sharing a checkout that is worse than an inconvenience:
+    someone's figures come out carrying someone else's settings, and
+    nothing on the figure says so.
+    """
+    if path:
+        resolved = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(resolved):
+            raise FileNotFoundError(f'No config file at {resolved}')
+        return resolved
+    local = os.path.abspath('config.py')
+    if os.path.isfile(local):
+        return local
+    return BUNDLED_CONFIG
+
+
+def load_config(path: str = None, quiet: bool = False) -> Config:
+    """Load a config.py by path and build a Config from it.
+
+    By path rather than by import, so that which file was used is a
+    decision taken here and reported, not a consequence of sys.path.
+    """
+    import importlib.util
+
+    resolved = find_config(path)
+    spec = importlib.util.spec_from_file_location('chapsim2_run_config',
+                                                  resolved)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not quiet:
+        print(f'Configuration: {resolved}')
+        if resolved == BUNDLED_CONFIG and os.path.abspath('config.py') != resolved:
+            print('  This is the toolkit\'s own config.py, not one of yours. '
+                  'Copy it next to\n  your data and edit that, or pass '
+                  '--config /path/to/config.py.')
+    return Config.from_module(module)
+
+
+def main(argv: List[str] = None):
     """Main execution function"""
-    # Import configuration
-    import config as config_module
-    config = Config.from_module(config_module)
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog='turb_stats',
+        description='Turbulence statistics from CHAPSim2 output.')
+    parser.add_argument(
+        '-c', '--config', default=None, metavar='PATH',
+        help='configuration file to use (default: ./config.py, falling back '
+             'to the one shipped with the toolkit)')
+    args = parser.parse_args(argv)
+
+    config = load_config(args.config)
 
     print("="*120)
     print("TURBULENCE STATISTICS PROCESSING")
