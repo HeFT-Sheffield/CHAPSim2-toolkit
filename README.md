@@ -131,9 +131,13 @@ temperature is recovered from the bulk enthalpy in the data.
 
 Enthalpy coefficients are derived from the heat-capacity ones rather than
 transcribed, as the solver now does, so that `dH/dT = Cp` holds exactly —
-checked numerically for every fluid. The valid range is melting to boiling
-except where a shipped fit is known not to reach boiling: PbLi-17 is capped
-at 850 K, below the root of its own viscosity cubic.
+checked numerically for every fluid.
+
+The temperature range is the melting-to-boiling phase range intersected with
+the validity range of each correlation that has one, and the toolkit records
+which property set each end. A fit does not hold over the whole liquid range
+merely because the material is liquid there: PbLi-17 is 521–625 K, both ends
+set by its viscosity correlation, against a phase range of 508–1943 K.
 
 Where the solver stops the run — a temperature outside that range — the
 toolkit returns NaN instead, so one bad cell leaves a gap rather than

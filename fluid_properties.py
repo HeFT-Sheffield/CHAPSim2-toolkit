@@ -91,9 +91,15 @@ _WARNED = set()
 # same reason. Transcribing both is how they came to disagree - the
 # sodium CoH in modules.f90 was LBE's until October 2026.
 #
-# TP0max is the top of the interval the correlations are evaluated over.
-# It is TB0 - melting to boiling is the single-phase liquid range - except
-# where a shipped fit is known not to hold that far; see pbli.
+# The interval a fluid's properties are evaluated over is the melting-to-
+# boiling phase range intersected with the validity range of each
+# correlation that has one. A fit does not hold over the whole liquid
+# range merely because the material is liquid there. Where a correlation
+# narrows the interval, the property that did so is recorded, so a
+# temperature out of range can say which fit it fell off.
+
+#: Molar gas constant, J/(mol K), as modules.f90 states it.
+RU_GAS = 8.314
 
 _COEFFICIENTS = {
     'sodium': dict(
@@ -158,13 +164,19 @@ _COEFFICIENTS = {
         CoB=8836.8,
         CoCp=[0.0, 0.0, 195.0, -9.116e-3, 0.0],
         # M = CoM[0] + CoM[1]*T + CoM[2]*T^2 + CoM[3]*T^3
-        # The viscosity cubic falls through zero at 858.996 K and is
-        # increasingly negative above it. The solver caps the property
-        # range at 850 K for this fluid alone rather than let that happen;
-        # the bound comes from the fit's own root, not from a literature
-        # validity range, because none is recorded for this polynomial.
-        TP0max=850.0,
-        CoM=[0.0061091, -2.2574e-5, 3.766e-8, -2.2887e-11], m_form='cubic',
+        # Schulz (1991), M = 1.87e-4 exp(EA / (Ru T)) with EA = 11640
+        # J/mol. This replaced a cubic from Martelli, Venturini & Utili
+        # (2019) that crossed zero at 858.996 K and went negative inside
+        # the range its own source states - not a fit to range-limit, a
+        # fit not to use.
+        #
+        # The sources disagree on where Schulz holds: the INL MOOSE
+        # implementation restricts it to melting point - 625 K, a liquid
+        # breeder compilation quoting the same expression says 521 - 900 K.
+        # The solver takes their overlap, which is policy adopted because
+        # the sources disagree rather than an established interval.
+        limits={'dynamic viscosity (Schulz 1991)': (521.0, 625.0)},
+        CoM=[11640.0 / RU_GAS, 1.87e-4, 0.0], m_form='arrhenius',
     ),
 }
 
@@ -351,14 +363,22 @@ class FunctionProperties(_Properties):
         self.name = name
         c = _COEFFICIENTS[name]
         self._c = c
-        self.T_melt = self.T_min = c['TM0']
+        self.T_melt = c['TM0']
         self.T_boil = c['TB0']
-        # Melting to boiling, unless the fluid's fit is known not to reach
-        # boiling. T_boil stays the physical value; T_max is how far the
-        # correlations may be trusted, and they are not the same question.
-        self.T_max = c.get('TP0max', c['TB0'])
         self.H_melt = c['HM0']
         self._curve = None
+
+        # Phase range intersected with every correlation limit that
+        # applies. T_melt and T_boil stay the physical temperatures;
+        # T_min and T_max are how far the fits may be trusted, and the two
+        # are not the same question.
+        self.T_min, self.T_max = c['TM0'], c['TB0']
+        self.T_min_source, self.T_max_source = 'melting point', 'boiling point'
+        for label, (low, high) in c.get('limits', {}).items():
+            if low > self.T_min:
+                self.T_min, self.T_min_source = low, label
+            if high < self.T_max:
+                self.T_max, self.T_max_source = high, label
 
     @property
     def CoH(self):

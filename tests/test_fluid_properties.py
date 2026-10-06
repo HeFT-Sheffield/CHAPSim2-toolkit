@@ -35,18 +35,47 @@ def _modules_f90():
         return fh.read()
 
 
+def _fortran_scalar(source, name):
+    """The value of `real(WP), parameter :: name = <literal>_WP`."""
+    match = re.search(name + r'\s*=\s*([0-9][0-9.eEdD+-]*)_WP', source)
+    if match is None:
+        raise AssertionError(f'{name} not found in modules.f90')
+    return float(match.group(1).replace('D', 'e').replace('d', 'e'))
+
+
 def _fortran_array(source, name):
-    """The numbers from `real(WP), parameter :: name(...) = (/ ... /)`."""
+    """The numbers from `real(WP), parameter :: name(...) = (/ ... /)`.
+
+    Entries may be named constants or a quotient of two, as CoM_PbLi's
+    `EA_PbLi / RU_GAS` is, so a term is resolved before it is read.
+    """
     match = re.search(name + r'\s*\([^)]*\)\s*=\s*\(/(.*?)/\)', source, re.S)
     if match is None:
-        match = re.search(name + r'\s*=\s*([0-9eEdD_.+-]+)_WP', source)
-        if match is None:
-            raise AssertionError(f'{name} not found in modules.f90')
-        return [float(match.group(1).replace('_WP', ''))]
+        return [_fortran_scalar(source, name)]
     body = match.group(1).replace('&', ' ').replace('\n', ' ')
-    return [float(tok.replace('_WP', '').replace('E', 'e'))
-            for tok in re.findall(r'-?\s*[0-9][0-9.eEdD+-]*_WP', body)
-            for tok in [tok.replace(' ', '')]]
+    # Strip trailing comments, then split on the commas between entries.
+    body = body.split('!')[0]
+    values = []
+    for term in body.split(','):
+        term = term.strip()
+        if not term:
+            continue
+        literal = re.fullmatch(r'(-?)\s*([0-9][0-9.eEdD+-]*)_WP', term)
+        if literal:
+            sign = -1.0 if literal.group(1) == '-' else 1.0
+            values.append(sign * float(literal.group(2).replace('D', 'e')))
+            continue
+        quotient = re.fullmatch(r'([A-Za-z_]\w*)\s*/\s*([A-Za-z_]\w*)', term)
+        if quotient:
+            values.append(_fortran_scalar(source, quotient.group(1))
+                          / _fortran_scalar(source, quotient.group(2)))
+            continue
+        named = re.fullmatch(r'[A-Za-z_]\w*', term)
+        if named:
+            values.append(_fortran_scalar(source, term))
+            continue
+        raise AssertionError(f'{name}: cannot read the term {term!r}')
+    return values
 
 
 #: toolkit name -> the suffix modules.f90 uses.
@@ -108,30 +137,57 @@ def test_dh_dt_is_cp_for_every_fluid():
         assert np.nanmax(np.abs(slope - cp) / np.abs(cp)) < 1e-7, name
 
 
-def test_the_property_range_is_melting_to_boiling_except_where_capped():
-    """TP0max, not TB0: a correlation is not guaranteed to hold over the
-    whole liquid range."""
+def test_the_property_range_is_the_phase_range_unless_a_fit_narrows_it():
+    """Phase limits and correlation limits are different questions: a fit
+    does not hold over the whole liquid range merely because the material
+    is liquid there."""
     for name in _SUFFIX:
         fluid = fp.get_fluid_properties(name)
-        assert fluid.T_min == fluid.T_melt
-        if name == 'pbli':
-            continue
-        assert fluid.T_max == fluid.T_boil, name
+        assert fluid.T_min >= fluid.T_melt
+        assert fluid.T_max <= fluid.T_boil
+        if name in fp._COEFFICIENTS and not fp._COEFFICIENTS[name].get('limits'):
+            assert fluid.T_min == fluid.T_melt, name
+            assert fluid.T_max == fluid.T_boil, name
+            assert fluid.T_min_source == 'melting point'
+            assert fluid.T_max_source == 'boiling point'
 
 
-def test_pbli_is_capped_below_the_root_of_its_viscosity_fit():
-    """The solver caps PbLi at 850 K because the viscosity cubic falls
-    through zero at 858.996 K. The bound comes from the fit's own root,
-    not from a literature validity range."""
+def test_pbli_is_narrowed_by_its_viscosity_correlation():
+    """Both ends of PbLi's range are set by the Schulz viscosity fit, not
+    by melting and boiling, and the toolkit can say so."""
     source = _modules_f90()
-    match = re.search(r'TP0max_PbLi\s*=\s*([0-9.eEdD+-]+)_WP', source)
-    assert match, 'TP0max_PbLi not found in modules.f90'
+    bounds = {}
+    for key in ('TMUmin_PbLi', 'TMUmax_PbLi'):
+        match = re.search(key + r'\s*=\s*([0-9.eEdD+-]+)_WP', source)
+        assert match, f'{key} not found in modules.f90'
+        bounds[key] = float(match.group(1))
     pbli = fp.get_fluid_properties('pbli')
-    assert pbli.T_max == float(match.group(1))
-    assert pbli.T_max < pbli.T_boil
-    # and the whole usable range now gives a positive viscosity
-    T = np.linspace(pbli.T_min, pbli.T_max, 2000)
-    assert np.all(np.asarray(pbli.viscosity(T)) > 0)
+    assert pbli.T_min == bounds['TMUmin_PbLi']
+    assert pbli.T_max == bounds['TMUmax_PbLi']
+    assert pbli.T_melt < pbli.T_min and pbli.T_max < pbli.T_boil
+    assert 'viscosity' in pbli.T_min_source
+    assert 'viscosity' in pbli.T_max_source
+
+
+def test_pbli_viscosity_is_the_arrhenius_form_not_the_cubic():
+    """The cubic that stood here crossed zero at 858.996 K, inside the
+    range its own source stated - a fit not to use, rather than one to
+    range-limit. Schulz 1991 replaces it."""
+    source = _modules_f90()
+    match = re.search(r'EA_PbLi\s*=\s*([0-9.eEdD+-]+)_WP', source)
+    assert match, 'EA_PbLi not found in modules.f90'
+    ru = re.search(r'RU_GAS\s*=\s*([0-9.eEdD+-]+)_WP', source)
+    assert ru, 'RU_GAS not found in modules.f90'
+    assert abs(fp.RU_GAS - float(ru.group(1))) < 1e-12
+
+    pbli = fp.get_fluid_properties('pbli')
+    assert fp._COEFFICIENTS['pbli']['m_form'] == 'arrhenius'
+    T = np.linspace(pbli.T_min, pbli.T_max, 100)
+    expected = 1.87e-4 * np.exp(float(match.group(1)) / fp.RU_GAS / T)
+    assert np.allclose(pbli.viscosity(T), expected)
+    # Liquid metal viscosities sit around 1e-3 Pa s; the cubic gave
+    # 6e-5 and falling at the top of this interval.
+    assert np.all(np.asarray(pbli.viscosity(T)) > 1e-3)
 
 
 def test_the_melting_and_boiling_points_match_the_solver():
@@ -270,32 +326,71 @@ def test_water_outside_its_table_is_nan():
     assert np.isnan(water.density_mass(1500.0))
 
 
-def test_a_non_physical_correlation_value_becomes_nan_with_a_warning():
-    """The guard that stops a negative viscosity reaching a Prandtl
-    number. No shipped correlation trips it now that PbLi is capped, so it
-    is exercised against a deliberately broken fluid rather than left
-    untested."""
+import contextlib
+
+
+@contextlib.contextmanager
+def _fluid_with_a_bad_fit():
+    """A fluid whose density correlation goes negative inside its range.
+
+    No shipped correlation does this any more - PbLi's cubic was the last
+    and it has been replaced - so the guard that catches it would go
+    untested if it were only exercised against real fluids. It is worth
+    keeping: it is the thing that stops a negative viscosity or density
+    reaching a Reynolds or Prandtl number if a future fit misbehaves.
+    """
+    name = '_test_bad_fit'
+    fp._COEFFICIENTS[name] = dict(
+        TM0=400.0, TB0=1000.0, HM0=0.0,
+        CoD=[1000.0, -2.0],          # crosses zero at 500 K, inside the range
+        CoK=[10.0, 0.0, 0.0],
+        CoB=5000.0,
+        CoCp=[0.0, 0.0, 1000.0, 0.0, 0.0],
+        CoM=[500.0, 1e-4, 0.0], m_form='arrhenius',
+    )
     fp._WARNED.clear()
-    broken = fp.get_fluid_properties('pbli')
-    broken.T_max = broken.T_boil          # un-cap it, back to the old range
-    broken._curve = None
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter('always')
-        assert np.isnan(broken.viscosity(1200.0))
-    assert any(issubclass(w.category, fp.PropertyRangeWarning)
-               for w in caught), 'the non-physical value was silent'
+    try:
+        yield fp.FunctionProperties(name)
+    finally:
+        del fp._COEFFICIENTS[name]
+        fp._WARNED.clear()
+
+
+def test_a_non_physical_correlation_value_becomes_nan_with_a_warning():
+    """A negative density must not reach a Reynolds number."""
+    with _fluid_with_a_bad_fit() as fluid:
+        assert fluid.density_mass(450.0) > 0
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            assert np.isnan(fluid.density_mass(600.0))
+        assert any(issubclass(w.category, fp.PropertyRangeWarning)
+                   for w in caught), 'the non-physical value was silent'
+
 
 def test_the_warning_is_raised_once_not_once_per_point():
     """A 5000-point profile should say it once, not 5000 times."""
+    with _fluid_with_a_bad_fit() as fluid:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            fluid.density_mass(np.linspace(600.0, 900.0, 5000))
+            fluid.density_mass(np.linspace(600.0, 900.0, 5000))
+        assert len(caught) == 1
+
+
+def test_no_shipped_correlation_trips_the_guard():
+    """The guard exists for a future bad fit, not a present one."""
     fp._WARNED.clear()
-    broken = fp.get_fluid_properties('pbli')
-    broken.T_max = broken.T_boil          # un-cap it, back to the old range
-    broken._curve = None
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        broken.viscosity(np.linspace(900.0, 1900.0, 5000))
-        broken.viscosity(np.linspace(900.0, 1900.0, 5000))
-    assert len(caught) == 1
+        for name in fp.FLUIDS:
+            fluid = fp.get_fluid_properties(name)
+            T = np.linspace(fluid.T_min, fluid.T_max, 1000)
+            for quantity in ('density_mass', 'viscosity',
+                             'thermal_conductivity', 'heat_capacity_p'):
+                getattr(fluid, quantity)(T)
+    assert not [w for w in caught
+                if issubclass(w.category, fp.PropertyRangeWarning)]
+
 
 
 # ---------------------------------------------------------------------------
