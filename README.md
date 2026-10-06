@@ -125,6 +125,13 @@ so nothing binary lives in the repository and the expected values are analytic.
 changing. Those tests skip themselves when the solver is not checked out
 alongside; set `CHAPSIM2_TESTS` to point at its `tests/` directory.
 
+`tests/test_gui.py` builds a real widget tree and drives it: applying a case to
+every tab, the values each tab takes from the case's `input_chapsim.ini`, the
+timestep scans, the config.py round trip and the Help topics. Plotting is left
+alone. These need `ttkbootstrap` and a display, and skip without either — run
+them under `xvfb-run -a python run_tests.py test_gui` on a headless machine,
+which is what CI does.
+
 ## Authors and provenance:
 
 The toolkit was written by **Alex Old** (University of Sheffield), who remains

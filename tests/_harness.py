@@ -1,17 +1,20 @@
 """Shared helpers for the toolkit's tests.
 
-Two things live here:
+Three things live here:
 
 * ``skip()``, which defers to pytest when it is installed and otherwise
   raises a sentinel the bundled runner understands, so the suite works
   either way;
-* builders that write synthetic CHAPSim2 cases on disk.
+* builders that write synthetic CHAPSim2 cases on disk;
+* ``gui_root()`` and ``gui_app()``, which stand a real Tk up against
+  whatever display is available and take it down again cleanly.
 
 The cases are generated rather than committed. The formats are small and
 exactly specified, the field values are analytic so a test can assert the
 number it should get, and nothing binary ends up in the repository.
 """
 
+import contextlib
 import os
 import struct
 import sys
@@ -22,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 __all__ = ['skip', 'Skip', 'SKIP_EXCEPTIONS', 'solver_tests_dir',
            'build_cartesian_case', 'build_cylindrical_case',
-           'write_monitor_files']
+           'write_monitor_files', 'gui_root', 'gui_app']
 
 
 class Skip(Exception):
@@ -379,3 +382,85 @@ def write_monitor_files(case_dir, thermo=True, nrows=6):
             fh.write(' '.join(f'{v:17.8E}' for v in row) + '\n')
 
     return monitor
+
+
+# ---------------------------------------------------------------------------
+# Standing a GUI up in a test
+# ---------------------------------------------------------------------------
+
+def _require_gui():
+    """Skip unless the GUI's dependencies and a usable display are present.
+
+    ``import gui`` succeeds without a display - it is Tk that needs one -
+    so the two are checked separately and the skip says which is missing.
+    """
+    try:
+        import tkinter as tk                                 # noqa: F401
+    except ImportError:
+        skip('tkinter is not available in this Python')
+    try:
+        import ttkbootstrap                                  # noqa: F401
+    except ImportError:
+        skip('ttkbootstrap is not installed')
+    try:
+        probe = tk.Tk()
+    except tk.TclError as exc:
+        skip(f'no display for Tk ({exc})')
+    probe.destroy()
+    _reset_tk_globals()
+
+
+def _reset_tk_globals():
+    """Forget the interpreter that has just been destroyed.
+
+    Both tkinter and ttkbootstrap cache the current root - tkinter as
+    _default_root, ttkbootstrap as the Style singleton holding a reference
+    to it. Neither is cleared on destroy(), so the next widget built in the
+    same process attaches itself to a dead interpreter and fails with
+    "application has been destroyed". One test per process would avoid
+    this; clearing the two caches is cheaper.
+    """
+    import tkinter as tk
+    try:
+        import ttkbootstrap as tb
+        tb.Style.instance = None
+    except ImportError:
+        pass
+    tk._default_root = None
+
+
+@contextlib.contextmanager
+def gui_root():
+    """A hidden Tk root to parent a single tab, destroyed afterwards."""
+    _require_gui()
+    import tkinter as tk
+    _reset_tk_globals()
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        yield root
+    finally:
+        root.destroy()
+        _reset_tk_globals()
+
+
+@contextlib.contextmanager
+def gui_app():
+    """The whole App, torn down through its own close handler.
+
+    App.__init__ points sys.stdout and sys.stderr at the console widget and
+    only restores them in _on_close. Calling destroy() directly would leave
+    every later print in the test run writing into a widget that no longer
+    exists, so the close handler is the only correct way out - and tearing
+    down this way is also what exercises it.
+    """
+    _require_gui()
+    import gui
+    _reset_tk_globals()
+    app = gui.App()
+    app.withdraw()
+    try:
+        yield app
+    finally:
+        app._on_close()
+        _reset_tk_globals()

@@ -28,9 +28,12 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          # pyvista and ttkbootstrap are only needed by the 3D tab and the
-          # GUI, neither of which runs here, so the runtime set is kept small.
-          pip install numpy matplotlib tqdm pytest
+          # pyvista is only needed by the 3D rendering, which no test drives.
+          # ttkbootstrap is needed: the GUI tests below build real widgets.
+          pip install numpy matplotlib tqdm pytest ttkbootstrap
+
+      - name: Install a virtual display for the GUI tests
+        run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Report the versions actually under test
         run: python -c "import numpy, matplotlib; print('numpy', numpy.__version__, '| matplotlib', matplotlib.__version__)"
@@ -41,7 +44,11 @@ jobs:
         # The tests that read CHAPSim2's own output skip themselves when the
         # solver is not checked out, which on a runner it never is. The rest
         # build their cases on disk and need nothing external.
-        run: python -m pytest tests -v
+        #
+        # Under xvfb so the GUI tests run rather than skip. They need a real
+        # display to build a widget tree, and skipping is silent - without
+        # this they would report green having checked nothing.
+        run: xvfb-run -a python -m pytest tests -v
 
       - name: Verify the budget terms against reference data
         env:
@@ -58,7 +65,8 @@ jobs:
           MPLBACKEND: Agg
         run: |
           for module in utils operations turb_stats slice monitor_points \
-                        mesh_analysis quick_turb_stats help_content stitch_domains; do
+                        mesh_analysis quick_turb_stats help_content \
+                        stitch_domains gui; do
             python -c "import $module" || exit 1
           done
 
@@ -68,4 +76,4 @@ jobs:
         # run_tests.py falls back to its own runner on machines where
         # installing pytest is awkward, which is most clusters. That path
         # has to keep working, so it is exercised explicitly.
-        run: python run_tests.py --no-pytest -q
+        run: xvfb-run -a python run_tests.py --no-pytest -q
