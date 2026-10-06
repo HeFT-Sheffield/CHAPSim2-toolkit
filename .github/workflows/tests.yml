@@ -32,7 +32,8 @@ jobs:
           # ttkbootstrap is needed: the GUI tests below build real widgets.
           # It is only installable on 3.10+, so on 3.9 those tests skip -
           # which is the truth about the GUI, not a gap in the testing.
-          pip install numpy matplotlib tqdm pytest \
+          # pandas is in install_requires and thermal_BC_calc needs it.
+          pip install numpy matplotlib tqdm pandas pytest \
                       "ttkbootstrap>=2.0.0; python_version>='3.10'"
 
       - name: Install a virtual display for the GUI tests
