@@ -10,6 +10,38 @@ with the caveat that the toolkit is pre-1.0 and the API may still move.
 
 ## [Unreleased]
 
+### Added
+
+- **1D energy spectrum of u′** (from upstream): a z spectrum at chosen x
+  stations, or an x spectrum averaged over z; averaged over snapshots for
+  timestep `avg`; optional k^-5/3 reference line. Checked against analytic
+  cases by `code_verification/verify_spectrum.py`.
+
+### Fixed
+
+- **Half-domain plots of a pipe or an annulus** — **behaviour change**.
+  Wall distance was taken as `y + 1` or `1 - y`, true only for a channel's
+  walls at y = ±1. A pipe came out from 1 at its axis to 2 at its wall,
+  with the half nearest the axis plotted rather than the wall region; an
+  annulus started at 1 + r_inner. The walls are now found from the grid,
+  and a pipe's half domain is its whole radius measured from the wall,
+  whatever `half_channel_side` says. Channel figures are unchanged, except
+  that a tsp_avg text profile (which carries no grid nodes) places each
+  wall half a cell beyond the outermost centre, as the wall shear already
+  did; on a stretched grid that moves the axis by a fraction of the first
+  cell.
+- The Lumley-triangle colour bar over the full domain was coloured by
+  signed y despite being labelled a wall distance; it is now each point's
+  distance to its nearer wall.
+
+### Changed
+
+- A wall-distance axis is labelled `$y_w$` for every geometry, in profile,
+  contour and two-point-correlation figures and the Lumley colour bar,
+  replacing a mix of "Distance from wall" and `$y$`. The solver's own
+  coordinate stays `$y$` (channel) or `$r$` (pipe, annulus), and a contour
+  is no longer captioned `$y^+$`, since it is never drawn against y+.
+
 ## [0.2.0] — 2026-10-06
 
 The first release intended for people other than its authors, alongside

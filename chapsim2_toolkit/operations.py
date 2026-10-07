@@ -323,15 +323,14 @@ def compute_peak_over_y(field, half=None):
     ``half`` restricts the search to one half of the channel, matching the
     half-channel plotting convention: ``'lower'`` keeps the y=-1 half,
     ``'upper'`` the y=+1 half, and ``'average'`` takes the peak of the
-    symmetric average of the two halves. ``None`` searches the full channel.
+    symmetric average of the two halves; ``'wall'`` is a pipe's whole
+    radius. ``None`` searches the full channel.
     """
     arr = np.asarray(field)
     if arr.ndim == 3:
         arr = arr.mean(axis=2)
 
     if half is not None:
-        if half not in ('lower', 'upper', 'average'):
-            raise ValueError("half must be 'lower', 'upper', 'average' or None.")
         arr = apply_half_channel(arr, half, axis=0)
 
     return arr.max(axis=0)
@@ -1167,6 +1166,71 @@ def symmetric_average(arr, axis=0):
         return np.concatenate((symmetric_avg, middle), axis=axis)
 
 
+#: Values apply_half_channel accepts for `side` (besides None).
+HALF_SIDES = ('lower', 'upper', 'average', 'wall')
+
+
+def half_domain_side(side, geometry):
+    """The apply_half_channel side that shows one wall for a geometry.
+
+    A channel or an annulus has a wall at each end of the wall-normal axis,
+    so the configured 'lower'/'upper'/'average' applies as it stands. A
+    pipe's radius runs from the axis to its only wall: there is no second
+    side to choose or fold onto, and halving it would keep the core and
+    discard the wall region, so every choice becomes 'wall'.
+    """
+    if side is None:
+        return None
+    if str(geometry or '').lower() == 'pipe':
+        return 'wall'
+    return side
+
+
+def wall_positions(y, geometry, y_nodes=None):
+    """Wall-normal coordinates of the (lower, upper) walls for cell centres `y`.
+
+    The grid nodes give the walls exactly; without them (a tsp_avg text
+    profile carries only cell centres) each wall is taken half a cell beyond
+    the outermost centre, the same assumption
+    compute_wall_shear_stress_from_velocity makes. A pipe's lower end is its
+    axis, not a wall, so it comes back as None.
+    """
+    y = np.asarray(y, dtype=float)
+    if y_nodes is not None and len(y_nodes) == len(y) + 1:
+        lower, upper = float(y_nodes[0]), float(y_nodes[-1])
+    elif len(y) >= 2:
+        lower = float(y[0] - 0.5 * (y[1] - y[0]))
+        upper = float(y[-1] + 0.5 * (y[-1] - y[-2]))
+    else:
+        raise ValueError('Need at least two wall-normal cells to place the walls.')
+    if str(geometry or '').lower() == 'pipe':
+        lower = None
+    return lower, upper
+
+
+def wall_distance(y, side, walls):
+    """Distance from the wall, for the cells apply_half_channel(y, side) keeps.
+
+    `walls` is wall_positions()'s (lower, upper). For a half-domain side the
+    result starts at the selected wall and increases toward the centreline
+    (or a pipe's axis), so every side and geometry plots on one axis;
+    'average' is measured from the lower wall, which is where
+    symmetric_average's output is indexed from. With side None the full
+    profile is kept and each cell is measured to its nearer wall.
+    """
+    y = np.asarray(y, dtype=float)
+    lower, upper = walls
+    if side is None:
+        to_upper = upper - y
+        return to_upper if lower is None else np.minimum(y - lower, to_upper)
+    if side not in HALF_SIDES:
+        raise ValueError("side must be 'lower', 'upper', 'average', 'wall' or None.")
+    if side == 'average':
+        return apply_half_channel(y, 'lower') - lower
+    half = apply_half_channel(y, side)
+    return upper - half if side in ('upper', 'wall') else half - lower
+
+
 def apply_half_channel(arr, side, axis=0):
     """Reduce an array to one half of the channel along the wall-normal `axis`.
 
@@ -1175,12 +1239,17 @@ def apply_half_channel(arr, side, axis=0):
     wall and the two can be compared on one axis), and 'average' returns the
     symmetric average of both. An odd number of wall-normal cells puts the
     centreline row in both halves (half_len = n - n//2), matching the
-    profile-plotting convention. `side` of None returns `arr` unchanged.
+    profile-plotting convention. 'wall' is a pipe's: its radius already runs
+    from the axis to the one wall, so the whole profile is kept and flipped
+    to start at the wall (see half_domain_side). `side` of None returns
+    `arr` unchanged.
     """
     if side is None:
         return arr
-    if side not in ('lower', 'upper', 'average'):
-        raise ValueError("side must be 'lower', 'upper', 'average' or None.")
+    if side not in HALF_SIDES:
+        raise ValueError("side must be 'lower', 'upper', 'average', 'wall' or None.")
+    if side == 'wall':
+        return np.flip(arr, axis=axis)
 
     if side == 'average':
         return symmetric_average(arr, axis=axis)

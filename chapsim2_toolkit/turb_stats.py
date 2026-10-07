@@ -119,7 +119,8 @@ class Config:
     vorticity_anisotropy_on: bool = False
 
     # Which wall half_channel_plot shows: 'lower' -> the y=-1 wall, 'upper'
-    # -> the y=+1 wall, 'average' -> the mean for symmetric flows.
+    # -> the y=+1 wall, 'average' -> the mean for symmetric flows. Ignored
+    # for a pipe, which has only one wall (see half_side).
     half_channel_side: str = 'lower'
 
     # Mean electric current density profiles — see MeanCurrentDensityj1/j2/j3.
@@ -162,6 +163,17 @@ class Config:
     # Set once apply_case_inputs has run, so a caller that applies the case
     # settings itself and then builds a loader is not told about them twice.
     case_inputs_applied: bool = False
+
+    @property
+    def half_side(self) -> Optional[str]:
+        """The op.apply_half_channel side half_channel_plot asks for, or None.
+
+        A pipe has one wall, so its side is always 'wall' whatever
+        half_channel_side says (see op.half_domain_side).
+        """
+        if not self.half_channel_plot:
+            return None
+        return op.half_domain_side(self.half_channel_side, self.geometry)
 
     @classmethod
     def from_module(cls, config_module):
@@ -2354,7 +2366,8 @@ class TwoPointCorrelationComputer:
     def __init__(self, folder_path: str, components: str, y_coords_str: str,
                  x_coords_str: str = '', timesteps: Optional[List[str]] = None,
                  max_sep: int = 0, mean_mode: str = 't_avg',
-                 half_channel_side: Optional[str] = None, average_x: bool = False):
+                 half_channel_side: Optional[str] = None, average_x: bool = False,
+                 geometry: str = 'channel'):
         self.folder_path = folder_path
         self.components = self._parse_components(components)
         self.y_coords = [float(s) for s in y_coords_str.replace(',', ' ').split() if s.strip()]
@@ -2369,6 +2382,7 @@ class TwoPointCorrelationComputer:
         self.mean_mode = mean_mode if mean_mode in ('t_avg', 'snapshot') else 't_avg'
         self.half_channel_side = half_channel_side
         self.average_x = average_x
+        self.geometry = geometry
         self.raw_results: Dict[Tuple[str, str], Dict[str, Dict[str, np.ndarray]]] = {}
         self.processed_results: Dict[Tuple[str, str], Dict[str, Dict[str, np.ndarray]]] = self.raw_results
 
@@ -2392,20 +2406,18 @@ class TwoPointCorrelationComputer:
             components = ['uu']
         return components
 
-    @staticmethod
-    def _y_for_side(y_cell: np.ndarray, side: Optional[str]) -> np.ndarray:
+    def _y_for_side(self, y_cell: np.ndarray, side: Optional[str],
+                    y_nodes: Optional[np.ndarray] = None) -> np.ndarray:
         """Wall-normal coordinates matching a half-channel reduced correlation.
 
         Same convention as TurbulencePlotter._get_y_plus: distance from the
         selected wall, 0 at the wall and increasing toward the centreline, so
-        'lower' and 'upper' land on a common axis. 'average' is indexed from
-        the lower wall, matching op.symmetric_average's output.
+        'lower' and 'upper' land on a common axis (see op.wall_distance).
         """
         if side is None:
             return y_cell.copy()
-        half_len = len(y_cell) - len(y_cell) // 2
-        y = np.flip(y_cell)[:half_len] if side == 'upper' else y_cell[:half_len]
-        return (1.0 - y) if side == 'upper' else (y + 1.0)
+        walls = op.wall_positions(y_cell, self.geometry, y_nodes)
+        return op.wall_distance(y_cell, side, walls)
 
     def _select_x(self, x_cell: np.ndarray, nx: int):
         """Choose the x stations to correlate at: (indices, coordinates, mode)."""
@@ -2581,7 +2593,7 @@ class TwoPointCorrelationComputer:
                 'var1': op.apply_half_channel(var1, half, axis=0),
                 'var2': op.apply_half_channel(var2, half, axis=0),
                 'sep': sep,
-                'y': self._y_for_side(y_cell[:ny], side),
+                'y': self._y_for_side(y_cell[:ny], side, y_nodes),
                 'x': x_values,
                 'label': f'$R_{{{comp}}}$',
                 'mean': ', '.join(f'{c}: {mean_sources[c]}' for c in sorted(set(comp))),
@@ -2754,8 +2766,7 @@ class TurbulenceStatsPipeline:
         if self.config.tke_peak_growth_on:
             # Peak stats are reduced over y at compute time, so the half-channel
             # selection has to be applied there rather than when processing.
-            peak_side = (self.config.half_channel_side
-                         if self.config.half_channel_plot else None)
+            peak_side = self.config.half_side
             self.statistics.append(PeakTKE(peak_side))
             self.statistics.append(PeakReynoldsStress('u_prime_sq', "<u'u'>", 'u1', 'uu11', peak_side))
             self.statistics.append(PeakReynoldsStress('v_prime_sq', "<v'v'>", 'u2', 'uu22', peak_side))
@@ -2867,9 +2878,9 @@ class TurbulenceStatsPipeline:
                 timesteps=self.config.timesteps,
                 max_sep=self.config.two_point_corr_max_sep,
                 mean_mode=self.config.two_point_corr_mean_mode,
-                half_channel_side=(self.config.half_channel_side
-                                   if self.config.half_channel_plot else None),
+                half_channel_side=self.config.half_side,
                 average_x=self.config.average_x_direction,
+                geometry=self.config.geometry,
             )
 
     def compute_all(self) -> None:
@@ -2980,17 +2991,14 @@ class TurbulenceStatsPipeline:
                     is_anisotropy_invariant = stat.name in (
                         'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
                     )
-                    if self.config.half_channel_plot and not is_x_profile_only and not is_anisotropy_invariant:
-
-                        half_len = normed.shape[0] - normed.shape[0] // 2
-                        side = self.config.half_channel_side
-
-                        if side == 'average' and stat.name not in ('u_prime_v_prime', 'temperature'):
-                            stat.processed_results[(case, timestep)] = op.symmetric_average(normed)
-                        elif side == 'upper':
-                            stat.processed_results[(case, timestep)] = np.flip(normed, axis=0)[:half_len]
-                        else:
-                            stat.processed_results[(case, timestep)] = normed[:half_len]
+                    side = self.config.half_side
+                    if side is not None and not is_x_profile_only and not is_anisotropy_invariant:
+                        # u'v' changes sign across the centreline and a heated
+                        # channel's temperature need not be symmetric, so
+                        # neither is folded: 'average' shows their lower half.
+                        if side == 'average' and stat.name in ('u_prime_v_prime', 'temperature'):
+                            side = 'lower'
+                        stat.processed_results[(case, timestep)] = op.apply_half_channel(normed, side)
                     else:
                         stat.processed_results[(case, timestep)] = normed
 
@@ -3155,16 +3163,36 @@ class TurbulencePlotter:
     #: Geometries whose wall-normal coordinate is a radius, not a y position.
     _CYLINDRICAL_GEOMETRIES = ('pipe', 'annulus', 'annular')
 
-    def _get_y_profile_xlabel(self) -> str:
-        """Return x-axis label for wall-normal profiles.
+    def _coordinate_label(self, wall_distance: bool) -> str:
+        """Label for an un-normalised wall-normal axis.
 
-        A pipe or annulus is solved in (x, r, theta), so its wall-normal
-        coordinate is the radius; captioning it 'y' misreports the geometry.
+        A distance from the wall is $y_w$ whatever the geometry, so a
+        half-domain channel, pipe and annulus share one axis. Otherwise it is
+        the solver's own coordinate: a pipe or annulus is solved in
+        (x, r, theta), so its wall-normal coordinate is the radius, and
+        captioning it 'y' misreports the geometry.
+        """
+        if wall_distance:
+            return '$y_w$'
+        geometry = str(getattr(self.config, 'geometry', '') or '').lower()
+        return '$r$' if geometry in self._CYLINDRICAL_GEOMETRIES else '$y$'
+
+    def _get_y_profile_xlabel(self, wall_distance: Optional[bool] = None) -> str:
+        """Label for the coordinate _get_y_plus returns.
+
+        `wall_distance` defaults to whether a half domain is plotted; pass
+        True to match _get_y_plus(as_wall_distance=True).
         """
         if self.config.norm_y_to_y_plus:
             return '$y^+$'
-        geometry = str(getattr(self.config, 'geometry', '') or '').lower()
-        return '$r$' if geometry in self._CYLINDRICAL_GEOMETRIES else '$y$'
+        if wall_distance is None:
+            wall_distance = self.config.half_side is not None
+        return self._coordinate_label(wall_distance)
+
+    def _wall_positions(self, y: np.ndarray) -> Tuple[Optional[float], Optional[float]]:
+        """op.wall_positions for `y`, from the loader's grid nodes when it has them."""
+        grid_info = getattr(self.data_loader, 'grid_info', None) or {}
+        return op.wall_positions(y, self.config.geometry, grid_info.get('grid_y'))
 
     def _get_stat_ylabel(self, stat_name: str, stat_label: str) -> str:
         """Return y-axis label matching enabled normalisation options."""
@@ -3617,13 +3645,11 @@ class TurbulencePlotter:
                     # averaging II/III across both walls in process_all — see
                     # the note there on why that would produce unrealizable
                     # (out-of-triangle) points.
-                    if self.config.half_channel_plot:
-                        if self.config.half_channel_side == 'upper':
-                            ii_profile = np.flip(ii_profile)[:len(y_plus)]
-                            iii_profile = np.flip(iii_profile)[:len(y_plus)]
-                        else:
-                            ii_profile = ii_profile[:len(y_plus)]
-                            iii_profile = iii_profile[:len(y_plus)]
+                    side = self.config.half_side
+                    if side is not None:
+                        side = 'lower' if side == 'average' else side
+                        ii_profile = op.apply_half_channel(ii_profile, side)[:len(y_plus)]
+                        iii_profile = op.apply_half_channel(iii_profile, side)[:len(y_plus)]
 
                     label = self._build_legend_label(kind_titles.get(kind, kind), case, timestep, suffix)
                     marker = marker_cycle[marker_index % len(marker_cycle)]
@@ -3642,7 +3668,7 @@ class TurbulencePlotter:
 
             if scatter is not None:
                 cbar = fig.colorbar(scatter, ax=ax)
-                color_label = self._get_y_profile_xlabel() if self.config.norm_y_to_y_plus else 'Distance from wall'
+                color_label = self._get_y_profile_xlabel(wall_distance=True)
                 cbar.set_label(color_label, fontsize=self._get_axis_label_fontsize())
 
             ax.set_title(f'{kind_titles.get(kind, kind)} Anisotropy', fontsize=self._get_title_fontsize())
@@ -3715,7 +3741,7 @@ class TurbulencePlotter:
     # ------------------------------------------------------------------
     def _corr_y_axis_label(self) -> str:
         """Label for the wall-normal axis of a two-point correlation figure."""
-        return 'Distance from wall' if self.config.half_channel_plot else '$y$'
+        return self._coordinate_label(self.config.half_side is not None)
 
     def plot_two_point_correlation(self, corr_computer):
         """Spanwise two-point correlation coefficient against separation, one
@@ -3861,12 +3887,11 @@ class TurbulencePlotter:
                     continue  # nothing to surface-plot
 
                 y = y_coords.copy()
-                if self.config.half_channel_plot:
+                side = self.config.half_side
+                if side is not None:
                     # Same wall-first convention as _get_y_plus: distance from
                     # the selected wall, 0 at the wall.
-                    n = values.shape[0]
-                    y = (1.0 - np.flip(y)[:n] if self.config.half_channel_side == 'upper'
-                         else y[:n] + 1.0)
+                    y = op.wall_distance(y, side, self._wall_positions(y))[:values.shape[0]]
 
                 X, Y = np.meshgrid(x_coords, y)
 
@@ -3878,7 +3903,9 @@ class TurbulencePlotter:
                 if self.config.large_text_on:
                     cbar.ax.tick_params(labelsize=13)
                 ax.set_xlabel('$x$', fontsize=self._get_axis_label_fontsize())
-                ax.set_ylabel('$y^+$' if self.config.norm_y_to_y_plus else '$y$', fontsize=self._get_axis_label_fontsize())
+                # The contour is drawn against y (or wall distance), never y+.
+                ax.set_ylabel(self._coordinate_label(side is not None),
+                              fontsize=self._get_axis_label_fontsize())
                 ax.set_title(f'{stat.label}  ({case}, t={timestep})', fontsize=self._get_title_fontsize())
                 self._apply_axis_text_style(ax)
 
@@ -4098,14 +4125,17 @@ class TurbulencePlotter:
     def _get_y_plus(self, case: str, timestep: str, as_wall_distance: bool = False) -> Optional[np.ndarray]:
         """Calculate y, y+, or wall-distance coordinates for a case.
 
-        Full channel: y spans [-1, 1] as loaded.
-        Half channel: always distance from the selected wall (0 at the wall,
+        Full domain: y (or r) as loaded.
+        Half domain: always distance from the selected wall (0 at the wall,
         increasing toward the centreline), so 'lower' and 'upper' plot on the
         same axis and can be compared directly. 'average' is indexed from the
-        lower wall, matching symmetric_average's output.
+        lower wall, matching symmetric_average's output; a pipe runs from its
+        wall to its axis. The walls are found by op.wall_positions, so this
+        holds for a channel, a pipe and an annulus alike.
 
-        `as_wall_distance` forces a 0-at-the-wall, increasing-toward-
-        centreline return even when norm_y_to_y_plus is off — for callers
+        `as_wall_distance` forces a 0-at-the-wall return even when
+        norm_y_to_y_plus is off - over the full domain, each point measured
+        to its nearer wall - for callers
         like the Lumley triangle that colour points by distance from the
         wall, where the raw signed y (which is +1 *at* the wall for
         'upper') would be a direction-flipped, misleading colour scale.
@@ -4118,11 +4148,9 @@ class TurbulencePlotter:
         y_coords = getattr(self.data_loader, 'y_coords', None)
         y = y_coords.copy() if y_coords is not None else ux_data[:, 1]
 
-        if self.config.half_channel_plot:
-            half_len = len(y) - len(y) // 2
-            side = self.config.half_channel_side
-            y = np.flip(y)[:half_len] if side == 'upper' else y[:half_len]
-            wall_distance = (1.0 - y) if side == 'upper' else (y + 1.0)
+        side = self.config.half_side
+        if side is not None or as_wall_distance:
+            wall_distance = op.wall_distance(y, side, self._wall_positions(y))
         else:
             wall_distance = y
 
@@ -4130,7 +4158,7 @@ class TurbulencePlotter:
             cur_Re = op.get_Re(case, self.config.cases, self.config.Re, ux_data,
                                self.config.forcing, y_coords=y_coords)
             return op.norm_y_to_y_plus(wall_distance, ux_data, cur_Re, y_coords=y_coords)
-        elif as_wall_distance or self.config.half_channel_plot:
+        elif as_wall_distance or side is not None:
             return wall_distance
         else:
             return y

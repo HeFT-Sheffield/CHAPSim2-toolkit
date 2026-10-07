@@ -126,6 +126,70 @@ def test_interpolate_wall_point_extrapolates_to_each_end():
 
 
 # ---------------------------------------------------------------------------
+# Half-domain plots measure from a wall. They used y + 1 and 1 - y, which
+# holds only for a channel's walls at y = +-1: a pipe came out from 1 at its
+# axis to 2 at its wall, and an annulus started at 1 + r_inner.
+# ---------------------------------------------------------------------------
+
+def test_the_walls_are_where_the_grid_ends():
+    for make, expected in ((_channel, (-1.0, 1.0)), (_annulus, (0.4, 1.0))):
+        y = make()[0]
+        assert np.allclose(op.wall_positions(y, 'channel'), expected)
+
+
+def test_a_pipe_has_no_lower_wall():
+    lower, upper = op.wall_positions(_pipe()[0], 'pipe')
+    assert lower is None and np.isclose(upper, 1.0)
+
+
+def test_grid_nodes_place_the_walls_exactly_on_a_stretched_grid():
+    nodes = np.tanh(2.0 * np.linspace(-1.0, 1.0, 33)) / np.tanh(2.0)
+    yc = 0.5 * (nodes[:-1] + nodes[1:])
+    assert op.wall_positions(yc, 'channel', nodes) == (-1.0, 1.0)
+
+
+def test_half_a_channel_starts_at_its_wall_on_either_side():
+    yc = _channel()[0]
+    walls = op.wall_positions(yc, 'channel')
+    lower = op.wall_distance(yc, 'lower', walls)
+    upper = op.wall_distance(yc, 'upper', walls)
+    assert np.allclose(lower, upper)               # symmetric grid
+    assert np.isclose(lower[0], 0.5 * (yc[1] - yc[0]))
+    assert np.isclose(lower[-1], 1.0 + yc[len(yc) - len(yc) // 2 - 1])   # last cell kept
+
+
+def test_half_a_pipe_is_its_whole_radius_from_the_wall():
+    rc = _pipe()[0]
+    side = op.half_domain_side('lower', 'pipe')
+    assert side == 'wall'
+    distance = op.wall_distance(rc, side, op.wall_positions(rc, 'pipe'))
+    assert np.allclose(distance, 1.0 - rc[::-1])
+    assert distance[0] > 0 and np.all(np.diff(distance) > 0)
+    profile = op.apply_half_channel(_pipe()[1], side)
+    assert len(profile) == len(distance) and abs(profile[0]) < 0.05   # wall first
+
+
+def test_half_an_annulus_is_measured_from_the_inner_or_outer_wall():
+    rc = _annulus()[0]
+    walls = op.wall_positions(rc, 'annulus')
+    assert np.isclose(op.wall_distance(rc, 'lower', walls)[0], rc[0] - 0.4)
+    assert np.isclose(op.wall_distance(rc, 'upper', walls)[0], 1.0 - rc[-1])
+
+
+def test_the_full_domain_measures_to_the_nearer_wall():
+    yc = _channel()[0]
+    distance = op.wall_distance(yc, None, op.wall_positions(yc, 'channel'))
+    assert np.allclose(distance, 1.0 - np.abs(yc))
+    rc = _pipe()[0]
+    assert np.allclose(op.wall_distance(rc, None, op.wall_positions(rc, 'pipe')), 1.0 - rc)
+
+
+def test_a_pipe_peak_is_searched_over_the_whole_radius():
+    field = np.outer(np.linspace(0.0, 1.0, 10), np.ones(3))   # largest at the wall
+    assert np.allclose(op.compute_peak_over_y(field, half='wall'), 1.0)
+
+
+# ---------------------------------------------------------------------------
 # Plot labelling and robustness. These live here rather than in a GUI test
 # because they are properties of the statistics, not of any widget.
 # ---------------------------------------------------------------------------
@@ -160,6 +224,43 @@ def test_dimensional_statistics_still_say_they_are_normalised():
     plotter = _plotter()
     assert 'u_\\tau^2' in plotter._get_stat_ylabel('u_prime_sq', 'u_prime_sq')
     assert 'u_\\tau^2' in plotter._get_stat_ylabel('TKE', 'TKE')
+
+
+def test_a_wall_distance_axis_reads_the_same_for_every_geometry():
+    for geometry in ('channel', 'pipe', 'annulus'):
+        half = _plotter(geometry=geometry, half_channel_plot=True)
+        assert half._get_y_profile_xlabel() == '$y_w$'
+        assert half._corr_y_axis_label() == '$y_w$'
+    assert _plotter(geometry='channel')._get_y_profile_xlabel() == '$y$'
+    assert _plotter(geometry='pipe')._get_y_profile_xlabel() == '$r$'
+    assert _plotter(geometry='pipe', norm_y_to_y_plus=True,
+                    half_channel_plot=True)._get_y_profile_xlabel() == '$y^+$'
+
+
+def test_the_lumley_colour_bar_is_a_wall_distance_even_over_the_full_domain():
+    assert _plotter()._get_y_profile_xlabel(wall_distance=True) == '$y_w$'
+
+
+def test_a_pipe_half_domain_ignores_the_side():
+    for side in ('lower', 'upper', 'average'):
+        plotter = _plotter(geometry='pipe', half_channel_plot=True, half_channel_side=side)
+        assert plotter.config.half_side == 'wall'
+    assert _plotter(geometry='pipe').config.half_side is None
+    assert _plotter(half_channel_plot=True, half_channel_side='upper').config.half_side == 'upper'
+
+
+def test_plotted_wall_distance_runs_from_the_wall_for_a_pipe():
+    rc, u = _pipe()
+
+    class _Loader:
+        y_coords = rc
+
+        def get(self, case, quantity, timestep):
+            return u
+
+    plotter = _plotter(geometry='pipe', half_channel_plot=True)
+    plotter.data_loader = _Loader()
+    assert np.allclose(plotter._get_y_plus('c', 't'), 1.0 - rc[::-1])
 
 
 def test_an_all_nan_series_is_skipped_not_plotted():
