@@ -10,7 +10,7 @@ pitch font, unwrapped, so the reader can rely on the alignment.
 
 __all__ = ['TOPICS', 'VERSION']
 
-VERSION = '0.1.0'
+from chapsim2_toolkit import __version__ as VERSION
 
 
 _ABOUT = """\
@@ -22,7 +22,10 @@ built on NumPy, Matplotlib and PyVista.
 
   Version   {version}
   Licence   MIT
-  Source    https://github.com/AlexOld1/CHAPSim2_python_toolkit
+  Source    https://github.com/weiwangstfc/CHAPSim2-toolkit
+
+Written by Alex Old, with Wei Wang (co-author and maintainer), under the
+CCP-NTH project.
 
 What it reads
 -------------

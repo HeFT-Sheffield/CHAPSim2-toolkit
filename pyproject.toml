@@ -12,7 +12,10 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
 maintainers = [{ name = "Wei Wang", email = "wei.wang@stfc.ac.uk" }]
-authors = [{ name = "Alex Old" }]
+authors = [
+    { name = "Alex Old" },
+    { name = "Wei Wang", email = "wei.wang@stfc.ac.uk" },
+]
 keywords = [
     "computational fluid dynamics", "direct numerical simulation",
     "turbulence statistics", "post-processing", "CHAPSim2",
@@ -43,7 +46,7 @@ dev = ["pytest>=6.0", "pytest-cov>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/weiwangstfc/CHAPSim2-toolkit"
-"Original repository" = "https://github.com/AlexOld1/CHAPSim2_python_toolkit"
+"Original repository" = "https://github.com/HeFT-Sheffield/CHAPSim2-toolkit"
 "CHAPSim2 solver" = "https://github.com/CHAPSim/CHAPSim2"
 
 [project.scripts]

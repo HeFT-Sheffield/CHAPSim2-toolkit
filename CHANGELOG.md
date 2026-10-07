@@ -36,6 +36,8 @@ with the caveat that the toolkit is pre-1.0 and the API may still move.
 
 ### Changed
 
+- The Help tab's About page reports the package version (it said 0.1.0)
+  and this repository, not the original one.
 - A wall-distance axis is labelled `$y_w$` for every geometry, in profile,
   contour and two-point-correlation figures and the Lumley colour bar,
   replacing a mix of "Distance from wall" and `$y$`. The solver's own

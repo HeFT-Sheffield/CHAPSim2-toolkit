@@ -1,9 +1,7 @@
 # Cite this software. GitHub renders this file as a "Cite this repository"
 # button and most reference managers read it directly.
 #
-# TODO before the move to CCP-NTH: add Alex Old's ORCID (and confirm his
-# preferred affiliation), add a DOI if the repository is archived on Zenodo,
-# and update `repository-code` to the CCP-NTH location.
+# TODO: add ORCIDs, and a DOI if the repository is archived on Zenodo.
 cff-version: 1.2.0
 title: CHAPSim2 Toolkit
 message: >-
@@ -13,11 +11,11 @@ type: software
 authors:
   - given-names: Alex
     family-names: Old
-    affiliation: University of Sheffield
+    affiliation: The University of Sheffield
     # orcid: 'https://orcid.org/0000-0000-0000-0000'
   - given-names: Wei
     family-names: Wang
-    affiliation: UKRI-STFC
+    affiliation: Science and Technology Facilities Council (STFC), UKRI
     email: wei.wang@stfc.ac.uk
 repository-code: 'https://github.com/weiwangstfc/CHAPSim2-toolkit'
 abstract: >-
