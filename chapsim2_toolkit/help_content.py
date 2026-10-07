@@ -21,8 +21,11 @@ A post-processing and pre-processing front end for the CHAPSim2 DNS solver,
 built on NumPy, Matplotlib and PyVista.
 
   Version   {version}
-  Licence   MIT
+  Licence   BSD 3-Clause
   Source    https://github.com/weiwangstfc/CHAPSim2-toolkit
+
+Copyright (c) 2025-2026, Science and Technology Facilities Council (STFC),
+UKRI, and The University of Sheffield.
 
 Written by Alex Old, with Wei Wang (co-author and maintainer), under the
 CCP-NTH project.

@@ -36,6 +36,10 @@ with the caveat that the toolkit is pre-1.0 and the API may still move.
 
 ### Changed
 
+- **Licence: BSD 3-Clause**, replacing MIT, agreed by the authors. The
+  toolkit is now copyright the Science and Technology Facilities Council
+  (STFC), UKRI, and The University of Sheffield; see `LICENSE`. 0.2.0 and
+  earlier remain available under MIT.
 - The Help tab's About page reports the package version (it said 0.1.0)
   and this repository, not the original one.
 - A wall-distance axis is labelled `$y_w$` for every geometry, in profile,

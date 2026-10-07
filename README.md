@@ -1,7 +1,7 @@
 # CHAPSim2 Toolkit
 
 [![tests](https://github.com/weiwangstfc/CHAPSim2-toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/weiwangstfc/CHAPSim2-toolkit/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
 
 Python pre- and post-processing for the
 [CHAPSim2](https://github.com/CHAPSim/CHAPSim2) direct numerical simulation
@@ -21,9 +21,10 @@ ASCII output directly and produces:
 Channels and ducts (Cartesian) and pipes and annuli (cylindrical) are all
 supported, with and without heat transfer and MHD.
 
-The toolkit is developed by The University of Sheffield and STFC (UKRI)
-under the [CCP-NTH](https://ccpnth.ac.uk/) project, and is released under
-the MIT licence.
+The toolkit is copyright the Science and Technology Facilities Council
+(STFC), UKRI, and The University of Sheffield, and is released under the
+BSD 3-Clause licence. It is developed under the
+[CCP-NTH](https://ccpnth.ac.uk/) project.
 
 ## Contents
 
@@ -38,7 +39,7 @@ the MIT licence.
 - [Changes](#changes)
 - [Contributors](#contributors)
 - [Citing](#citing)
-- [Licence](#licence)
+- [Licence and copyright](#licence-and-copyright)
 - [Acknowledgements](#acknowledgements)
 - [Reference data](#reference-data)
 
@@ -388,11 +389,15 @@ individual commits record this in their `Co-Authored-By` trailers.
 If you use the toolkit in published work, please cite it using
 [`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository" button).
 
-## Licence
+## Licence and copyright
 
-Licensed under the [MIT licence](LICENSE). The CHAPSim2 solver itself is
-BSD-3-Clause and copyright UKRI-STFC; the two are separate works under
-separate licences.
+Copyright (c) 2025-2026, Science and Technology Facilities Council (STFC),
+UKRI, and The University of Sheffield.
+
+Released under the [BSD 3-Clause licence](LICENSE), the same licence as the
+CHAPSim2 solver.
+
+Version 0.2.0 and earlier were released under the MIT licence.
 
 ## Acknowledgements
 
