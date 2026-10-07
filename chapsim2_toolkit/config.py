@@ -85,6 +85,12 @@ two_point_corr_mean_mode = 't_avg' # 't_avg' (u' = u_inst - u_t_avg) or 'snapsho
 # The correlation is folded about the centreline only when half_channel_side = 'average' (symmetric channels only;
 # a warning is printed if the lower and upper walls differ)
 
+# 1D energy spectrum of u' (needs instantaneous 3D visu data)
+spectrum_on = False
+spectrum_direction = 'z' # 'z' (spanwise) or 'x' (streamwise, assumes x is periodic)
+spectrum_y_coords = '' # y coords to take the spectrum at, e.g. '-0.9,0.0'
+spectrum_x_coords = '' # x stations of a z spectrum (blank = mid-domain, or all x if average_x_direction)
+
 # Reynolds Stress Budget terms
 re_stress_budget_on = False
 re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components
@@ -120,5 +126,6 @@ plot_name = '' # name for saved plot files, leave blank for default naming
 ux_velocity_log_ref_on = True
 mhd_NK_ref_on = False # MHD turbulent channel at Re_tau=150, Ha=(4,6), Noguchi & Kasagi 1994 (thtlabs.jp)
 mkm180_ch_ref_on = False # Turbulent channel at Re_tau=180, Moser, Kim & Mansour 1999 (DOI: 10.1017/S002211209900708X)
+spectrum_kolmogorov_ref_on = True # k^-5/3 slope line on the 1D spectrum plot
 
 #====================================================================================================================================================

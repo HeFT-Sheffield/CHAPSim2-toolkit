@@ -1374,21 +1374,24 @@ def compute_lorentz_force(mag_field_direction, stuart_number, force_dict):
 
 def compute_1d_spectrum(field, dx=1.0):
     """
-    One-sided 1D power spectral density of a real-valued signal, via FFT
-    along the last axis (a homogeneous spatial direction).
+    One-sided 1D energy spectrum of a real-valued signal, via FFT along the
+    last axis (a homogeneous spatial direction).
 
-    Uses the real FFT (rfft) since `field` is real-valued, and normalizes
-    so the spectrum sums (Parseval) to the signal's mean-square value:
-        sum(E, axis=-1) ~= mean(field**2, axis=-1)
+    Uses the real FFT (rfft) since `field` is real-valued. E is the energy
+    of each Fourier mode rather than a density per unit wavenumber, so it
+    sums (Parseval) to the signal's mean-square value:
+        sum(E, axis=-1) == mean(field**2, axis=-1)
+    Dividing by the mode spacing dk = k[1] gives the density whose integral
+    over k is the mean square instead.
 
     Args:
         field: real array; FFT is taken along the last axis
         dx: grid spacing along that axis
 
     Returns:
-        (k, E): wavenumber array (rad/length, one-sided) and the power
-                spectral density, same shape as `field` but with the last
-                axis replaced by len(k) = n//2 + 1.
+        (k, E): wavenumber array (rad/length, one-sided) and the energy
+                spectrum, same shape as `field` but with the last axis
+                replaced by len(k) = n//2 + 1.
     """
     n = field.shape[-1]
     fft_vals = np.fft.rfft(field, axis=-1)
@@ -1414,21 +1417,17 @@ def compute_two_point_correlation_z(f1, f2, max_sep=None, periodic=True):
 
         R(dz) = < f1(z) f2(z + dz) >_z
 
-    `f1` and `f2` are fluctuation fields with the mean already removed and z
-    as axis 0 -- (nz, ny, nx), (nz, ny) or (nz,) all work. The returned array
+    `f1` and `f2` are fluctuation fields and z as axis 0 -- (nz, ny, nx), 
+    (nz, ny) or (nz,) all work. The returned array
     replaces that axis with separation: (max_sep, ...).
 
     With periodic=True (a channel's spanwise direction) the separation wraps
     around the domain, so every dz is averaged over all nz samples. Every
     separation is then obtained at once from the FFT, since the correlation
-    and the cross-spectrum are a transform pair (Wiener-Khinchin) -- exact,
-    and O(nz log nz) instead of O(nz * max_sep). It is the same transform
-    that compute_1d_spectrum takes, so sum(E) == R(0) by construction.
-
-    With periodic=False only the pairs that fit inside the domain are used,
-    dividing by the (nz - dz) samples available. That is the right estimator
-    for a non-periodic direction, but its large-separation tail is noisy
-    because it averages over progressively fewer samples.
+    and the cross-spectrum are a transform pair (Wiener-Khinchin),
+    and O(nz log nz) instead of O(nz * max_sep). With periodic=False only 
+    the pairs that fit inside the domain are used, dividing by the (nz - dz) 
+    samples available.
 
     max_sep defaults to half the domain plus one point (nz//2 + 1); beyond
     that a periodic correlation only mirrors itself.

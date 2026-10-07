@@ -146,6 +146,8 @@ class Config:
     spectrum_on: bool = False
     spectrum_direction: str = 'z'
     spectrum_y_coords: str = ''
+    spectrum_x_coords: str = ''              # x stations of a z spectrum
+    spectrum_kolmogorov_ref_on: bool = True  # k^-5/3 slope line on the spectrum plot
 
     # Spanwise two-point velocity correlation — see TwoPointCorrelationComputer.
     two_point_corr_on: bool = False
@@ -245,6 +247,8 @@ class Config:
             spectrum_on=getattr(config_module, 'spectrum_on', False),
             spectrum_direction=getattr(config_module, 'spectrum_direction', 'z'),
             spectrum_y_coords=getattr(config_module, 'spectrum_y_coords', ''),
+            spectrum_x_coords=getattr(config_module, 'spectrum_x_coords', ''),
+            spectrum_kolmogorov_ref_on=getattr(config_module, 'spectrum_kolmogorov_ref_on', True),
             two_point_corr_on=getattr(config_module, 'two_point_corr_on', False),
             two_point_corr_components=getattr(config_module, 'two_point_corr_components', 'uu'),
             two_point_corr_y_coords=getattr(config_module, 'two_point_corr_y_coords', ''),
@@ -2149,71 +2153,139 @@ class SpectrumComputer:
     along a homogeneous direction (x or z), at one or more wall-normal (y)
     locations.
 
-    A spectrum needs the raw, unaveraged instantaneous flow field — unlike
-    the other stats in this pipeline, which work from time/space-averaged
-    t_avg/tsp_avg data (already reduced away any spatial structure a
-    spectrum would analyze) — so it loads the instantaneous XDMF file
-    directly instead of going through the shared data_loader.
+    A spectrum needs the raw, unaveraged instantaneous flow field, so it
+    loads the instantaneous XDMF file directly instead of going through the
+    shared data_loader.
 
-    raw_results / processed_results: {(case, timestep): {y_value: (k, E)}}
-    — not plain ndarrays, so this is deliberately kept out of
-    TurbulenceStatsPipeline.statistics (process_all's generic per-stat
-    normalization assumes ndarray values).
+    E is the energy per Fourier mode (see op.compute_1d_spectrum), the
+    convention of the Vreman & Kuerten spectra in code_verification. As
+    there, k = 0 and the Nyquist mode are dropped: qx_ccc is interpolated to
+    cell centres in x, which zeroes the x-direction Nyquist mode.
+
+    A z spectrum is taken at x stations, since x is inhomogeneous in a
+    developing flow; every x line is averaged only when 'Average x
+    direction' is on. An x spectrum is averaged over z and assumes x is
+    periodic. For timestep 'avg' (average_over_timesteps) the spectra of
+    the configured snapshots are averaged.
+
+    raw_results / processed_results:
+        {(case, timestep): {'k': (n_k,), 'E': (n_y, n_x, n_k), 'y': (n_y,), 'x': (n_x,)}}
+    with 'x' empty when the lines were averaged. Kept out of
+    TurbulenceStatsPipeline.statistics since these aren't plain ndarrays.
     """
 
-    def __init__(self, folder_path: str, direction: str, y_coords_str: str):
+    def __init__(self, folder_path: str, direction: str, y_coords_str: str,
+                 x_coords_str: str = '', timesteps: Optional[List[str]] = None,
+                 average_x: bool = False):
         self.folder_path = folder_path
         self.direction = direction if direction in ('x', 'z') else 'z'
         self.y_coords = [float(s) for s in y_coords_str.replace(',', ' ').split() if s.strip()]
-        self.raw_results: Dict[Tuple[str, str], Dict[float, Tuple[np.ndarray, np.ndarray]]] = {}
-        self.processed_results: Dict[Tuple[str, str], Dict[float, Tuple[np.ndarray, np.ndarray]]] = self.raw_results
+        self.x_coords = [float(s) for s in x_coords_str.replace(',', ' ').split() if s.strip()]
+        self.timesteps = list(timesteps) if timesteps else []
+        self.average_x = average_x
+        self.raw_results: Dict[Tuple[str, str], Dict[str, np.ndarray]] = {}
+        self.processed_results: Dict[Tuple[str, str], Dict[str, np.ndarray]] = self.raw_results
 
     def compute_for_case(self, case: str, timestep: str, data_loader=None) -> bool:
         if not self.y_coords:
             print("Spectral analysis: no y-coordinates specified; skipping.")
             return False
 
-        inst_xdmf = ut.group_xdmf_paths(self.folder_path, case, timestep)['inst']
-        if inst_xdmf is None:
-            print(f"Missing instantaneous flow file for spectral analysis: {case}, {timestep}\n"
-                  f"  Looked for: domain1_flow_{timestep}.xdmf")
-            return False
+        snapshots = self.timesteps if timestep == 'avg' else [timestep]
+        # Each line is transformed separately; averaging them (all z lines of
+        # an x spectrum, or all x lines of an x-averaged z spectrum) leaves
+        # one spectrum per y location.
+        average_lines = self.direction == 'x' or (self.average_x and not self.x_coords)
 
-        var_meta, grid_info = ut.parse_xdmf_metadata(inst_xdmf)
-        data = ut.load_xdmf_variables(var_meta, ['qx_ccc'], grid_info=grid_info)
-        if not data or 'qx_ccc' not in data:
-            print(f"Failed to load qx_ccc for spectral analysis: {case}, {timestep}")
-            return False
+        result = None
+        n_used = 0
+        for snapshot in snapshots:
+            inst_xdmf = ut.group_xdmf_paths(self.folder_path, case, snapshot)['inst']
+            if inst_xdmf is None:
+                print(f"Missing instantaneous flow file for spectral analysis: {case}, {snapshot}\n"
+                      f"  Looked for: domain1_flow_{snapshot}.xdmf")
+                continue
 
-        y_nodes = grid_info.get('grid_y')
-        x_nodes = grid_info.get('grid_x')
-        z_nodes = grid_info.get('grid_z')
-        if y_nodes is None or x_nodes is None or z_nodes is None:
-            print(f"Missing grid coordinates for spectral analysis: {case}, {timestep}")
-            return False
-        y_cell = 0.5 * (y_nodes[:-1] + y_nodes[1:])
-        x_cell = 0.5 * (x_nodes[:-1] + x_nodes[1:])
-        z_cell = 0.5 * (z_nodes[:-1] + z_nodes[1:])
+            var_meta, grid_info = ut.parse_xdmf_metadata(inst_xdmf)
+            y_nodes = grid_info.get('grid_y')
+            x_nodes = grid_info.get('grid_x')
+            z_nodes = grid_info.get('grid_z')
+            if y_nodes is None or x_nodes is None or z_nodes is None:
+                print(f"Missing grid coordinates for spectral analysis: {case}, {snapshot}")
+                continue
 
-        u = data['qx_ccc']  # (nz, ny, nx)
-        results = {}
-        for y_val in self.y_coords:
-            y_idx = int(np.argmin(np.abs(y_cell - y_val)))
-            plane = u[:, y_idx, :]  # (nz, nx), fixed y
+            data = ut.load_xdmf_variables(var_meta, ['qx_ccc'], grid_info=grid_info)
+            u = data.get('qx_ccc')  # (nz, ny, nx)
+            if u is None:
+                print(f"Failed to load qx_ccc for spectral analysis: {case}, {snapshot}")
+                continue
+            if u.ndim != 3:
+                print("Spectral analysis needs the full 3D instantaneous field (a 2D slice has "
+                      "no homogeneous direction to transform along); skipping.")
+                return False
 
-            if self.direction == 'x':
-                signal = plane - plane.mean(axis=1, keepdims=True)  # (nz, nx)
-                dx = float(x_cell[1] - x_cell[0])
-            else:
-                signal = plane.T - plane.T.mean(axis=1, keepdims=True)  # (nx, nz)
+            nz, ny, nx = u.shape
+            y_cell = (0.5 * (y_nodes[:-1] + y_nodes[1:]))[:ny]
+            x_cell = (0.5 * (x_nodes[:-1] + x_nodes[1:]))[:nx]
+            z_cell = (0.5 * (z_nodes[:-1] + z_nodes[1:]))[:nz]
+            y_indices = [int(np.argmin(np.abs(y_cell - v))) for v in self.y_coords]
+
+            # Lines to transform, laid out (n_y, n_lines, n) with the
+            # transform direction last.
+            if self.direction == 'z':
+                if self.x_coords:
+                    x_indices = [int(np.argmin(np.abs(x_cell - v))) for v in self.x_coords]
+                elif self.average_x:
+                    x_indices = list(range(nx))
+                else:
+                    x_indices = [nx // 2]
+                lines = np.moveaxis(u[:, y_indices, :][:, :, x_indices], 0, -1)
                 dx = float(z_cell[1] - z_cell[0])
+            else:
+                x_indices = []
+                lines = np.moveaxis(u[:, y_indices, :], 0, 1)
+                dx = float(x_cell[1] - x_cell[0])
+            del data, u  # release the multi-GB snapshot before the next is read
 
-            k, E = op.compute_1d_spectrum(signal, dx=dx)
-            # Average over the other (batched) homogeneous direction for
-            # statistical convergence of a single-snapshot spectrum.
-            results[float(y_cell[y_idx])] = (k, E.mean(axis=0))
+            k, E = op.compute_1d_spectrum(lines - lines.mean(axis=-1, keepdims=True), dx=dx)
+            if average_lines:
+                E = E.mean(axis=1, keepdims=True)
+            # Drop the mean (k = 0) and the Nyquist mode an even n ends on.
+            keep = slice(1, (lines.shape[-1] + 1) // 2)
+            k, E = k[keep], E[:, :, keep]
 
-        self.raw_results[(case, timestep)] = results
+            if result is None:
+                result = {'k': k, 'E': E, 'y': y_cell[y_indices],
+                          'x': np.array([]) if average_lines else x_cell[x_indices]}
+            elif result['E'].shape != E.shape:
+                print(f"Spectral analysis: the grid of {case}, {snapshot} differs from the earlier "
+                      f"snapshots; leaving it out of the average.")
+                continue
+            else:
+                result['E'] = result['E'] + E
+            n_used += 1
+
+        if result is None:
+            print(f"Spectral analysis: no usable snapshots for {case}, {timestep}")
+            return False
+        result['E'] = result['E'] / n_used
+
+        if timestep == 'avg':
+            print(f"Spectral analysis: averaged {n_used} snapshot(s) for {case}")
+        if self.direction == 'x':
+            if self.x_coords:
+                print("Spectral analysis: x stations only apply to a z spectrum; an x spectrum "
+                      "is averaged over every z line instead.")
+            if not self.average_x:
+                print("WARNING: x spectrum with 'Average x direction' off. The FFT treats x as "
+                      "periodic, so in a developing flow the inflow/outflow mismatch leaks energy "
+                      "into every kx; use a z spectrum at x stations there instead.")
+        elif not self.x_coords and not self.average_x:
+            print(f"Spectral analysis: no x stations given; using the mid-domain station "
+                  f"x={float(result['x'][0]):.4g}. x is inhomogeneous in a developing flow, so no "
+                  f"x-average is taken unless 'Average x direction' is enabled.")
+
+        self.raw_results[(case, timestep)] = result
         return True
 
 
@@ -2779,6 +2851,9 @@ class TurbulenceStatsPipeline:
                 self.config.folder_path,
                 self.config.spectrum_direction,
                 self.config.spectrum_y_coords,
+                self.config.spectrum_x_coords,
+                timesteps=self.config.timesteps,
+                average_x=self.config.average_x_direction,
             )
 
         # Also kept out of self.statistics — see TwoPointCorrelationComputer.
@@ -3088,8 +3163,6 @@ class TurbulencePlotter:
         """
         if self.config.norm_y_to_y_plus:
             return '$y^+$'
-        if self.config.half_channel_plot:
-            return 'Distance from wall'
         geometry = str(getattr(self.config, 'geometry', '') or '').lower()
         return '$r$' if geometry in self._CYLINDRICAL_GEOMETRIES else '$y$'
 
@@ -3585,7 +3658,7 @@ class TurbulencePlotter:
 
     def plot_spectrum(self, spectrum_computer: Optional[SpectrumComputer]):
         """1D streamwise-velocity-fluctuation energy spectrum: log-log E(k)
-        vs k, one curve per (case, timestep, y-location).
+        vs k, one curve per (case, timestep, y-location, x-station).
 
         Not part of plot_by_class's grouped-statistics machinery — see
         SpectrumComputer's docstring — so this is called directly by
@@ -3598,21 +3671,37 @@ class TurbulencePlotter:
         fig = Figure(figsize=(8, 6), constrained_layout=True)
         ax = fig.add_subplot(111)
 
-        for (case, timestep), by_y in spectrum_computer.processed_results.items():
-            for y_value, (k, E) in by_y.items():
-                # k[0] = 0 (DC/mean component) can't be shown on a log-log axis.
-                k_plot, E_plot = k[1:], E[1:]
-                suffix = f' y={y_value:.3g}'
-                label = self._build_legend_label(f'{spectrum_computer.direction}-spectrum', case, timestep, suffix)
-                color = self._get_color(f'{case}|{timestep}|{y_value}', 'spectrum')
-                linestyle = self._get_linestyle(case)
-                ax.loglog(k_plot, E_plot, label=label, color=color, linestyle=linestyle)
+        direction = spectrum_computer.direction
+        for (case, timestep), data in spectrum_computer.processed_results.items():
+            for y_index, y_value in enumerate(data['y']):
+                for x_index in range(data['E'].shape[1]):
+                    suffix = f' y={float(y_value):.3g}'
+                    if len(data['x']):
+                        suffix += f" x={float(data['x'][x_index]):.3g}"
+                    label = self._build_legend_label(f'{direction}-spectrum', case, timestep, suffix)
+                    color = self._get_color(f'{case}|{timestep}|{y_index}|{x_index}', 'spectrum')
+                    ax.loglog(data['k'], data['E'][y_index, x_index], label=label, color=color,
+                              linestyle=self._get_linestyle(case))
 
-        direction_label = f'$k_{spectrum_computer.direction}$'
-        ax.set_title(f"Streamwise Velocity Fluctuation Spectrum ({spectrum_computer.direction}-direction)",
+        # Kolmogorov k^-5/3 reference. Only its slope means anything, so it
+        # spans the middle half of the (log) k range, just above every curve.
+        if self.config.spectrum_kolmogorov_ref_on:
+            lines = ax.get_lines()
+            k_min = min(line.get_xdata().min() for line in lines)
+            k_max = max(line.get_xdata().max() for line in lines)
+            k_ref = np.geomspace(k_min * (k_max / k_min) ** 0.25, k_min * (k_max / k_min) ** 0.75, 20)
+            level = 0.0
+            for line in lines:
+                k, E = line.get_xdata(), line.get_ydata()
+                inside = (k >= k_ref[0]) & (k <= k_ref[-1])
+                level = max(level, float(np.max(E[inside] * k[inside] ** (5 / 3), initial=0.0)))
+            ax.loglog(k_ref, 1.5 * level * k_ref ** (-5 / 3), '--', color='black', linewidth=1,
+                      alpha=0.5, label='$k^{-5/3}$')
+
+        ax.set_title(f"Streamwise Velocity Fluctuation Spectrum ({direction}-direction)",
                      fontsize=self._get_title_fontsize())
-        ax.set_xlabel(direction_label, fontsize=self._get_axis_label_fontsize())
-        ax.set_ylabel('$E(k)$', fontsize=self._get_axis_label_fontsize())
+        ax.set_xlabel(f'$k_{direction}$', fontsize=self._get_axis_label_fontsize())
+        ax.set_ylabel(f'$E_{{uu}}(k_{direction})$', fontsize=self._get_axis_label_fontsize())
         ax.grid(True, which='both')
         handles, labels = ax.get_legend_handles_labels()
         if handles:
@@ -3789,8 +3878,7 @@ class TurbulencePlotter:
                 if self.config.large_text_on:
                     cbar.ax.tick_params(labelsize=13)
                 ax.set_xlabel('$x$', fontsize=self._get_axis_label_fontsize())
-                ax.set_ylabel('Distance from wall' if self.config.half_channel_plot else '$y$',
-                              fontsize=self._get_axis_label_fontsize())
+                ax.set_ylabel('$y^+$' if self.config.norm_y_to_y_plus else '$y$', fontsize=self._get_axis_label_fontsize())
                 ax.set_title(f'{stat.label}  ({case}, t={timestep})', fontsize=self._get_title_fontsize())
                 self._apply_axis_text_style(ax)
 

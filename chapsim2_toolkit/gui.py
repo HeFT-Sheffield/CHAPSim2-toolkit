@@ -689,6 +689,10 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
         erow(s, 'Corr. max sep. (cells)', sv('two_point_corr_max_sep', '0'))
         crow(s, 'Correlation mean', sv('two_point_corr_mean_mode', 't_avg'),
              ['t_avg', 'snapshot'])
+        chk(s, "1D u' energy spectrum (requires full 3D field)", bv('spectrum_on', False))
+        crow(s, 'Spectrum direction', sv('spectrum_direction', 'z'), ['z', 'x'])
+        erow(s, 'Spectrum y coords', sv('spectrum_y_coords', ''))
+        erow(s, 'Spectrum x stations', sv('spectrum_x_coords', ''))
         thermal_stats_section = sec('Thermal Statistics')
         s = thermal_stats_section
         chk(s, 'Wall Heat transfer coeff.', bv('heat_transf_coeff_on', False))
@@ -756,7 +760,8 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
         mhd_nk_row = chk(s, 'MHD NK reference', bv('mhd_NK_ref_on', False))
         nk_hartmann_row = crow(s, 'NK reference Hartmann no.', sv('mhd_NK_ref_case', 'Ha_6'), ['Ha_4', 'Ha_6'])
         mkm180_row = chk(s, 'MKM180 reference', bv('mkm180_ch_ref_on', False))
-        ref_rows = [loglaw_row, mhd_nk_row, nk_hartmann_row, mkm180_row]
+        kolmogorov_row = chk(s, 'Spectrum k^-5/3 reference', bv('spectrum_kolmogorov_ref_on', True))
+        ref_rows = [loglaw_row, mhd_nk_row, nk_hartmann_row, mkm180_row, kolmogorov_row]
 
         # ---- Thermal/MHD-driven visibility --------------------------------------
         # Toggles/rows within each affected section are always fully re-packed in
@@ -1123,6 +1128,11 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
             two_point_corr_x_coords=v['two_point_corr_x_coords'].get(),
             two_point_corr_max_sep=self._parse_int(v['two_point_corr_max_sep'].get()),
             two_point_corr_mean_mode=v['two_point_corr_mean_mode'].get(),
+            spectrum_on=v['spectrum_on'].get(),
+            spectrum_direction=v['spectrum_direction'].get(),
+            spectrum_y_coords=v['spectrum_y_coords'].get(),
+            spectrum_x_coords=v['spectrum_x_coords'].get(),
+            spectrum_kolmogorov_ref_on=v['spectrum_kolmogorov_ref_on'].get(),
         )
 
     # ------ Run pipeline -------------------------------------------------------------
@@ -1219,6 +1229,7 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
                 'two_point_corr_x_coords': '', 'two_point_corr_max_sep': 0,
                 'two_point_corr_mean_mode': 't_avg',
                 'output_dir': '', 'geometry': 'channel',
+                'spectrum_direction': 'z', 'spectrum_y_coords': '', 'spectrum_x_coords': '',
             }
             bool_fields = {
                 'thermo_on': False, 'mhd_on': False,
@@ -1240,7 +1251,8 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
                 'large_text_on': False, 'ux_velocity_log_ref_on': True,
                 'mhd_NK_ref_on': False, 'mkm180_ch_ref_on': False,
                 'save_fig': True,
-                'two_point_corr_on': False,
+                'two_point_corr_on': False, 'spectrum_on': False,
+                'spectrum_kolmogorov_ref_on': True,
             }
             for name, default in str_fields.items():
                 if name in v:
@@ -1375,6 +1387,11 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
             f"two_point_corr_max_sep = {self._parse_int(v['two_point_corr_max_sep'].get())}",
             f"two_point_corr_mean_mode = '{v['two_point_corr_mean_mode'].get()}'",
             '',
+            f"spectrum_on = {v['spectrum_on'].get()}",
+            f"spectrum_direction = '{v['spectrum_direction'].get()}'",
+            f"spectrum_y_coords = '{v['spectrum_y_coords'].get()}'",
+            f"spectrum_x_coords = '{v['spectrum_x_coords'].get()}'",
+            '',
             f"heat_transf_coeff_on = {v['heat_transf_coeff_on'].get()}",
             f"Nusselt_number_on = {v['Nusselt_number_on'].get()}",
             f"turb_prandtl_on = {v['turb_prandtl_on'].get()}",
@@ -1399,6 +1416,7 @@ class TurbStatsTab(CaseConsumer, ConsoleConsumer, ttk.Frame):
             f"mhd_NK_ref_on = {v['mhd_NK_ref_on'].get()}",
             f"mhd_NK_ref_case = '{v['mhd_NK_ref_case'].get()}'",
             f"mkm180_ch_ref_on = {v['mkm180_ch_ref_on'].get()}",
+            f"spectrum_kolmogorov_ref_on = {v['spectrum_kolmogorov_ref_on'].get()}",
         ]
         try:
             with open(path, 'w') as fh:
