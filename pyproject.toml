@@ -10,7 +10,7 @@ dynamic = ["version"]
 description = "Post-processing and pre-processing toolkit for the CHAPSim2 DNS solver"
 readme = "README.md"
 requires-python = ">=3.8"
-license = { text = "MIT" }
+license = { text = "BSD-3-Clause" }
 maintainers = [{ name = "Wei Wang", email = "wei.wang@stfc.ac.uk" }]
 authors = [
     { name = "Alex Old" },
@@ -25,7 +25,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Visualization",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
 ]
 dependencies = [

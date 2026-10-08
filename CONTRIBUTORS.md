@@ -1,9 +1,10 @@
 # Contributors
 
-The CHAPSim2 Toolkit is developed by The University of Sheffield and the
-Science and Technology Facilities Council (STFC, UKRI) under the
-[CCP-NTH](https://ccpnth.ac.uk/) project (Collaborative Computational Project
-in Nuclear Thermal Hydraulics).
+Copyright (c) 2025-2026, Science and Technology Facilities Council (STFC),
+UKRI, and The University of Sheffield; see `LICENSE`.
+
+The toolkit is developed under the [CCP-NTH](https://ccpnth.ac.uk/) project
+(Collaborative Computational Project in Nuclear Thermal Hydraulics).
 
 ## Authors
 
@@ -25,8 +26,8 @@ provenance, the package layout, the test suite and continuous integration.
 
 Contributions are welcome through issues and pull requests on
 [GitHub](https://github.com/weiwangstfc/CHAPSim2-toolkit). By contributing you
-agree that your contribution is licensed under the project's licence (see
-`LICENSE`). If you contribute, add yourself to the table above in the same pull
+agree that your contribution is licensed under the project's BSD 3-Clause
+licence. If you contribute, add yourself to the table above in the same pull
 request, and to `CITATION.cff` if you would like to be cited.
 
 Before opening a pull request, run the tests (`python run_tests.py`) and add an
