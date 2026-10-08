@@ -30,3 +30,9 @@ Thumbs.db
 # Code Testing
 Tests/
 turb_stats_plots/
+# build artefacts
+dist/
+build/
+*.egg-info/
+
+.scratch/

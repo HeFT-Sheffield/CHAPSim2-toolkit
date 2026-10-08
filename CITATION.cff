@@ -1,0 +1,34 @@
+# Cite this software. GitHub renders this file as a "Cite this repository"
+# button and most reference managers read it directly.
+#
+# TODO: add ORCIDs, and a DOI if the repository is archived on Zenodo.
+cff-version: 1.2.0
+title: CHAPSim2 Toolkit
+message: >-
+  If you use this software, please cite it. The toolkit was written by
+  Alex Old; please keep him as first author.
+type: software
+authors:
+  - given-names: Alex
+    family-names: Old
+    affiliation: The University of Sheffield
+    # orcid: 'https://orcid.org/0000-0000-0000-0000'
+  - given-names: Wei
+    family-names: Wang
+    affiliation: Science and Technology Facilities Council (STFC), UKRI
+    email: wei.wang@stfc.ac.uk
+repository-code: 'https://github.com/weiwangstfc/CHAPSim2-toolkit'
+abstract: >-
+  A Python post-processing and pre-processing toolkit for the CHAPSim2
+  direct numerical simulation solver. Reads CHAPSim2's XDMF, binary and
+  ASCII output to produce turbulence statistics, slice and three-dimensional
+  visualisation, monitor-point histories and pre-run mesh resolution
+  analysis, for Cartesian and cylindrical cases with and without heat
+  transfer and magnetohydrodynamics.
+keywords:
+  - computational fluid dynamics
+  - direct numerical simulation
+  - turbulence statistics
+  - post-processing
+  - CHAPSim2
+license: MIT

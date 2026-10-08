@@ -1,5 +1,9 @@
 import numpy as np
-import utils
+from chapsim2_toolkit import utils
+
+# np.trapz was renamed np.trapezoid in NumPy 2.0 and the old name is deprecated.
+# Bind whichever this interpreter has so the toolkit runs on both.
+_trapezoid = getattr(np, 'trapezoid', None) or np.trapz
 
 # =====================================================================================================================================================
 # General Functions
@@ -274,9 +278,9 @@ def get_Re(case, cases, Re, ux_velocity, flow_forcing, y_coords=None):
         else:
             y = ux_velocity[:, 1]
         if len(Re) > 1:
-            cur_Re = Re[cases.index(case)] * (0.5 * np.trapezoid(profile, y))
+            cur_Re = Re[cases.index(case)] * (0.5 * _trapezoid(profile, y))
         else:
-            cur_Re = Re[0] * (0.5 * np.trapezoid(profile, y))
+            cur_Re = Re[0] * (0.5 * _trapezoid(profile, y))
     else:
         raise ValueError("flow_forcing must be either 'CMF' or 'CPG'")
     return cur_Re
@@ -319,15 +323,14 @@ def compute_peak_over_y(field, half=None):
     ``half`` restricts the search to one half of the channel, matching the
     half-channel plotting convention: ``'lower'`` keeps the y=-1 half,
     ``'upper'`` the y=+1 half, and ``'average'`` takes the peak of the
-    symmetric average of the two halves. ``None`` searches the full channel.
+    symmetric average of the two halves; ``'wall'`` is a pipe's whole
+    radius. ``None`` searches the full channel.
     """
     arr = np.asarray(field)
     if arr.ndim == 3:
         arr = arr.mean(axis=2)
 
     if half is not None:
-        if half not in ('lower', 'upper', 'average'):
-            raise ValueError("half must be 'lower', 'upper', 'average' or None.")
         arr = apply_half_channel(arr, half, axis=0)
 
     return arr.max(axis=0)
@@ -335,18 +338,91 @@ def compute_peak_over_y(field, half=None):
 def compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0):
     return tau_w / (0.5 * ref_rho * ref_bulk_velocity**2)
 
-def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
-    """Compute wall shear stress from near-wall interpolated velocity points."""
+def wall_side(ux_data):
+    """Which end of the wall-normal axis is a no-slip wall: 'lower' or 'upper'.
+
+    A pipe's wall-normal coordinate is the radius, so index 0 is the axis,
+    not a wall: the velocity there is the profile maximum and its gradient
+    vanishes by symmetry. Taking the 'lower' end regardless reports the
+    centreline gradient as the wall shear, which for a developing pipe comes
+    out several times too small and drags u_tau, Re_tau, y+ and every
+    u_tau-normalised profile down with it.
+
+    A channel or an annulus has walls at both ends, and either gives a valid
+    wall shear, so 'lower' is kept for them and existing results are
+    unchanged. Only a clearly free end - one carrying a large fraction of the
+    profile's peak speed while the other is near rest - selects 'upper'.
+    """
     arr = np.asarray(ux_data)
+    profile = arr[:, 2] if (arr.ndim == 2 and arr.shape[1] == 3) else arr
+    while np.ndim(profile) > 1:
+        profile = np.asarray(profile).mean(axis=-1)
+    if np.size(profile) < 2:
+        return 'lower'
+
+    lo, hi = abs(float(profile[0])), abs(float(profile[-1]))
+    scale = float(np.nanmax(np.abs(profile)))
+    if scale <= 0.0 or not np.isfinite(scale):
+        return 'lower'
+    # Free ends sit near the peak; no-slip ends sit near zero.
+    if lo > 0.5 * scale and hi < 0.1 * scale:
+        return 'upper'
+    return 'lower'
+
+
+def field_axes(field, average_x=False, average_z=False):
+    """Which numpy axis each direction occupies in a statistics array.
+
+    Returns a dict mapping 'x', 'y' and 'z' to an axis number, or to None
+    where that direction has been averaged away.
+
+    The layout cannot be read off the averaging flags alone. They say what
+    the loader was asked to do, not what shape the data arrived in: tsp_avg
+    output is already averaged over its periodic direction by the solver, so
+    it is two-dimensional while both flags are off. Dispatch on ndim, and
+    use the flags only to tell the two possible 2-D layouts apart.
+
+        3-D (nz, ny, nx)   z=0, y=1, x=2
+        2-D (ny, nx)       y=0, x=1        z averaged out, or already averaged
+        2-D (nz, ny)       z=0, y=1        x averaged out
+        1-D (ny,)          y=0             both averaged out
+    """
+    ndim = getattr(field, 'ndim', 0)
+    if ndim >= 3:
+        return {'x': 2, 'y': 1, 'z': 0}
+    if ndim == 2:
+        if average_x and not average_z:
+            return {'x': None, 'y': 1, 'z': 0}
+        return {'x': 1, 'y': 0, 'z': None}
+    return {'x': None, 'y': 0, 'z': None}
+
+
+def compute_wall_shear_stress_from_velocity(ux_data, Re_ref, y_coords=None, wall=None):
+    """Compute wall shear stress from near-wall interpolated velocity points.
+
+    ``Re_ref`` is the Reynolds number the solver non-dimensionalised with -
+    ``ren`` in the input file, which is what makes the viscous term carry
+    1/Re. It is read from the case, so it is the right one by
+    construction; the argument used to be called Re_bulk, which is a
+    different number for a constant-pressure-gradient run.
+
+    ``wall`` selects which end to differentiate at; None detects it with
+    wall_side(), which keeps 'lower' for channels and annuli and picks the
+    wall rather than the axis for a pipe.
+    """
+    arr = np.asarray(ux_data)
+    wall = wall or wall_side(ux_data)
+    edge, neighbour = (0, 1) if wall == 'lower' else (-1, -2)
+
     if arr.ndim == 2 and arr.shape[1] == 3:
-        y0, y1 = float(arr[0, 1]), float(arr[1, 1])
-        u0 = arr[0, 2]
+        y0, y1 = float(arr[edge, 1]), float(arr[neighbour, 1])
+        u0 = arr[edge, 2]
     else:
         if arr.shape[0] < 2:
             raise ValueError('Need at least two wall-normal cells for near-wall shear stress.')
-        u0 = arr[0]
+        u0 = arr[edge]
         if y_coords is not None:
-            y0, y1 = float(y_coords[0]), float(y_coords[1])
+            y0, y1 = float(y_coords[edge]), float(y_coords[neighbour])
         else:
             y0, y1 = 0.0, 1.0
 
@@ -354,10 +430,10 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
     if dy01 == 0.0:
         raise ValueError('Invalid wall-normal coordinates: first two points have zero spacing.')
 
-    u_wall = interpolate_wall_point(ux_data, y_coords=y_coords, wall='lower')
+    u_wall = interpolate_wall_point(ux_data, y_coords=y_coords, wall=wall)
     dy_wall_to_first_cell = 0.5 * dy01
     du_dy_wall = (u0 - u_wall) / dy_wall_to_first_cell
-    mu = 1.0 / float(Re_bulk)
+    mu = 1.0 / float(Re_ref)
     return mu * du_dy_wall
 
 # =====================================================================================================================================================
@@ -365,7 +441,7 @@ def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
 # =====================================================================================================================================================
 
 def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coords=None,
-                                     fluid=None):
+                                     fluid=None, return_bulk_temperature=False):
     """Compute wall heat-transfer coefficient using a mass flux average of enthalpy.
     
     Args:
@@ -375,10 +451,15 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         fu: Mass flux field (same shape as temp)
          y_coords: Wall-normal coordinates for integration
         fluid: Fluid properties object (from utils.get_fluid_properties).
-               If None, defaults to LiquidLithiumProperties.
-        
+        return_bulk_temperature: also return the bulk temperature profile.
+            The Nusselt number needs the conductivity at the bulk
+            temperature, and this is where the bulk temperature is already
+            worked out - computing it twice is how the two drift apart.
+
     Returns:
-        Heat transfer coefficient (scalar or 1D array depending on input dims)
+        Heat transfer coefficient (scalar or 1D array depending on input
+        dims), or (coefficient, bulk temperature in K) when
+        return_bulk_temperature is set.
     """
     temp = np.asarray(temp)
     fuh = np.asarray(fuh)
@@ -388,7 +469,11 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         raise ValueError("y_coords is required for integration.")
     
     if fluid is None:
-        fluid = utils.get_fluid_properties('lithium')
+        # Defaulting to lithium here meant a water case got a lithium
+        # conductivity and said nothing about it.
+        raise ValueError(
+            'compute_wall_heat_transfer_coeff needs a fluid; it is normally '
+            'read from the case input_chapsim.ini')
     
     if temp.ndim == 3:
         # Ensure y_coords is 1D and matches axis 1 size (nz, ny, nx)
@@ -397,8 +482,8 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
             raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 1 size {fuh.shape[1]}")
 
         # Integrate over y (wall-normal, axis=1)
-        fuh_y_integrated = np.trapezoid(fuh, y_coords_1d, axis=1)  # shape: (nz, nx)
-        fu_y_integrated = np.trapezoid(fu, y_coords_1d, axis=1)    # shape: (nz, nx)
+        fuh_y_integrated = _trapezoid(fuh, y_coords_1d, axis=1)  # shape: (nz, nx)
+        fu_y_integrated = _trapezoid(fu, y_coords_1d, axis=1)    # shape: (nz, nx)
 
         # Integrate over z (axis=0). For uniform z, mean vs integral differs by
         # a constant factor that cancels in the ratio.
@@ -412,7 +497,7 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
         y_coords_1d = np.asarray(y_coords).ravel()
         if y_coords_1d.size != fuh.shape[0]:
             raise ValueError(f"y_coords size {y_coords_1d.size} doesn't match fuh axis 0 size {fuh.shape[0]}")
-        bulk_enthalpy_x = np.trapezoid(fuh, y_coords_1d, axis=0) / np.trapezoid(fu, y_coords_1d, axis=0)
+        bulk_enthalpy_x = _trapezoid(fuh, y_coords_1d, axis=0) / _trapezoid(fu, y_coords_1d, axis=0)
         wall_temp = interpolate_wall_point(temp, y_coords=y_coords_1d, wall='lower')
     else:
         raise ValueError("2D or 3D data required for surface integral.")
@@ -420,10 +505,21 @@ def compute_wall_heat_transfer_coeff(heat_flux, temp, ref_temp, fuh, fu, y_coord
     fluid_temp = fluid.temperature_from_enthalpy(bulk_enthalpy_x, ref_temp)  # dimensional bulk temperature
     wall_temp = wall_temp * ref_temp
 
-    return heat_flux / (wall_temp - fluid_temp)
+    coefficient = heat_flux / (wall_temp - fluid_temp)
+    if return_bulk_temperature:
+        return coefficient, fluid_temp
+    return coefficient
 
 def compute_wall_Nusselt_number(heat_transfer_coeff, ref_length, ref_fluid_properties):
-    return ( heat_transfer_coeff * ref_length ) / ref_fluid_properties['k']
+    """Nu = h L / k.
+
+    k may be a scalar or a profile. For internal flow it is evaluated at
+    the bulk temperature, which varies along the duct, so on a heated
+    supercritical case it is a profile - k changes sharply through the
+    pseudo-critical region and a single reference value is not close.
+    """
+    k = np.asarray(ref_fluid_properties['k'], dtype=float)
+    return (np.asarray(heat_transfer_coeff, dtype=float) * ref_length) / k
 
 def compute_temp_fluc(T, TT):
     temp_fluc = np.sqrt(TT - np.square(T))
@@ -475,27 +571,26 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     def grad_x(field):
         if field is None:
             return None
-        if average_x:
+        axis = field_axes(field, average_x, average_z)['x']
+        if axis is None:
             return np.zeros_like(field)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, axis=1)
-        return np.gradient(field, axis=2)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     def grad_y(field):
         if field is None:
             return None
+        axis = field_axes(field, average_x, average_z)['y']
         if field.ndim == 1:
             return np.gradient(field, y_coords)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, y_coords, axis=0)
-        return np.gradient(field, y_coords, axis=1)  # 3D (nz, ny, nx)
+        return np.gradient(field, y_coords, axis=axis)
 
     def grad_z(field):
         if field is None:
             return None
-        if average_z:
+        axis = field_axes(field, average_x, average_z)['z']
+        if axis is None:
             return np.zeros_like(field)
-        return np.gradient(field, axis=0)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     def lap_y(field):
         """Second derivative in y on a stretched mesh."""
@@ -510,9 +605,12 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     # ------------------------------------------------------------------
     # Variable lookup (prefixes already stripped by reader)
     # ------------------------------------------------------------------
+    missing = set()
+
     def get_var(name):
         val = xdmf_data_dict.get(name, None)
         if val is None:
+            missing.add(name)
             print(f"WARNING: '{name}' is missing from the loaded data. "
                   f"Terms computed from it will be zero")
         return val
@@ -775,6 +873,10 @@ def compute_budget_components(xdmf_data_dict, y_coords, average_z=False, average
     # Output
     # ------------------------------------------------------------------
     return {
+        # Which requested variables the data did not carry. A term built
+        # only from these is not zero, it is uncomputed, and saying so is
+        # the difference between 'negligible' and 'not available' on a plot.
+        '_missing': missing,
         'U1': u1, 'U2': u2, 'U3': u3,
         'u_prime': u_prime_rms,
         'pr': pr,
@@ -874,7 +976,8 @@ def compute_viscous_diffusion(Re, turb_comp_dict, uiuj='total'):
 def compute_pressure_transport(tke_comp_dict, uiuj='total', u_ref=1): # think this needs 1 / rho
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
     P = tke_comp_dict['press_velocity_fluc_grad_tensor']
-    f = tke_comp_dict['f']
+    # Isothermal cases carry no density field; both forms mean 'unweighted'.
+    f = tke_comp_dict.get('f')
     G_CONST = 9.81
     if uiuj == 'total':
         return {'pressure_transport': -np.trace(P) if f is None else -np.trace(P) / (f)}
@@ -890,7 +993,8 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total', u_ref=1):
     so that Π_ij = (S[i,j] + S[j,i]) / ⟨ρ⟩.
     TKE total = 0.5 * Π_ii = trace(S) / ⟨ρ⟩ = 0.
     """ 
-    f = tke_comp_dict['f']
+    # Isothermal cases carry no density field; both forms mean 'unweighted'.
+    f = tke_comp_dict.get('f')
     S = tke_comp_dict['pressure_strain_tensor']
     G_CONST = 9.81
     if uiuj == 'total':
@@ -908,7 +1012,7 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total', u_ref=1):
 #     W_ij = (1/<f>) * (∂⟨p⟩/∂x_i * ⟨u'_i⟩ + ∂⟨p⟩/∂x_j * ⟨u'_j⟩)
 #     Total TKE = (1/<f>) * Σ_k ∂⟨p⟩/∂x_k * ⟨u'_k⟩
 #     """
-#     f = tke_comp_dict['f']
+#     f = tke_comp_dict.get('f')
 #     PW = tke_comp_dict['pressure_work_tensor']
 #     rho_inv = (1.0 / f) if f is not None else 1.0
 #     if uiuj == 'total':
@@ -925,7 +1029,7 @@ def compute_buoyancy_term(gravity_direction, u_ref, l_ref, tke_comp_dict, uiuj='
     """
 
     G_CONST = 9.81
-    rho = tke_comp_dict['f']
+    rho = tke_comp_dict.get('f')
     g = np.array(gravity_direction)
     f_prime_u = tke_comp_dict['f_prime_u_prime']  # list of 3 arrays (or None entries)
     u1 = tke_comp_dict['U1']
@@ -992,23 +1096,29 @@ def dimensionalize_temperature(temp_data, ref_temp, norm_temp_by_ref_temp):
         return temp_arr
     return temp_arr * float(ref_temp)
 
-def norm_turb_stat_wrt_u_tau_sq(ux_data, turb_stat, Re_bulk, y_coords=None):
-    _, u_tau_sq, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
+def norm_turb_stat_wrt_u_tau_sq(ux_data, turb_stat, Re_ref, y_coords=None):
+    _, u_tau_sq, _ = compute_u_tau_quantities(ux_data, Re_ref, y_coords)
     return np.divide(np.asarray(turb_stat), u_tau_sq)
 
-def norm_ux_velocity_wrt_u_tau(ux_data, Re_bulk, y_coords=None):
-    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
+def norm_ux_velocity_wrt_u_tau(ux_data, Re_ref, y_coords=None):
+    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_ref, y_coords)
     profile = ux_data if y_coords is not None else ux_data[:, 2]
     return np.divide(np.asarray(profile), u_tau)
 
-def compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
+def compute_u_tau_quantities(ux_data, Re_ref, y_coords=None):
     """Compute wall shear stress quantities from near-wall velocity data.
+
+    Re_ref is the solver's ``ren``, the number the equations are
+    non-dimensionalised with - not the bulk Reynolds number, which is a
+    different value for a constant-pressure-gradient run.
 
     For nD native arrays the wall gradient is computed from the first two
     y-indices (axis 0) and then averaged over any remaining axes so that
     u_tau is a single scalar.
     """
-    Re_bulk = int(Re_bulk)
+    # Was int(), which truncated a non-integer Reynolds number before
+    # every u_tau normalisation in the toolkit.
+    Re_ref = float(Re_ref)
     if y_coords is not None:
         # Native array: axis-0 is y.  ux_data[0], ux_data[1] may be 1-D (nx,) or scalar
         du = ux_data[0] - ux_data[1]
@@ -1019,15 +1129,16 @@ def compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
     dudy = du / dy
     # Average over any spatial dims so u_tau is always a scalar
     dudy = np.mean(dudy)
-    tau_w = dudy / Re_bulk
+    tau_w = dudy / Re_ref
     u_tau_sq = abs(tau_w)
     u_tau = np.sqrt(u_tau_sq)
     return u_tau, u_tau_sq, tau_w
 
-def norm_y_to_y_plus(y, ux_data, Re_bulk, y_coords=None):
-    Re_bulk = int(Re_bulk)
-    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
-    return y * u_tau * Re_bulk
+def norm_y_to_y_plus(y, ux_data, Re_ref, y_coords=None):
+    """y+ = y u_tau Re_ref, with Re_ref the solver's ``ren``."""
+    Re_ref = float(Re_ref)      # was int(), truncating a non-integer Re
+    u_tau, _, _ = compute_u_tau_quantities(ux_data, Re_ref, y_coords)
+    return y * u_tau * Re_ref
 
 def symmetric_average(arr, axis=0):
     """Average the first and second halves of the domain along `axis`.
@@ -1055,6 +1166,71 @@ def symmetric_average(arr, axis=0):
         return np.concatenate((symmetric_avg, middle), axis=axis)
 
 
+#: Values apply_half_channel accepts for `side` (besides None).
+HALF_SIDES = ('lower', 'upper', 'average', 'wall')
+
+
+def half_domain_side(side, geometry):
+    """The apply_half_channel side that shows one wall for a geometry.
+
+    A channel or an annulus has a wall at each end of the wall-normal axis,
+    so the configured 'lower'/'upper'/'average' applies as it stands. A
+    pipe's radius runs from the axis to its only wall: there is no second
+    side to choose or fold onto, and halving it would keep the core and
+    discard the wall region, so every choice becomes 'wall'.
+    """
+    if side is None:
+        return None
+    if str(geometry or '').lower() == 'pipe':
+        return 'wall'
+    return side
+
+
+def wall_positions(y, geometry, y_nodes=None):
+    """Wall-normal coordinates of the (lower, upper) walls for cell centres `y`.
+
+    The grid nodes give the walls exactly; without them (a tsp_avg text
+    profile carries only cell centres) each wall is taken half a cell beyond
+    the outermost centre, the same assumption
+    compute_wall_shear_stress_from_velocity makes. A pipe's lower end is its
+    axis, not a wall, so it comes back as None.
+    """
+    y = np.asarray(y, dtype=float)
+    if y_nodes is not None and len(y_nodes) == len(y) + 1:
+        lower, upper = float(y_nodes[0]), float(y_nodes[-1])
+    elif len(y) >= 2:
+        lower = float(y[0] - 0.5 * (y[1] - y[0]))
+        upper = float(y[-1] + 0.5 * (y[-1] - y[-2]))
+    else:
+        raise ValueError('Need at least two wall-normal cells to place the walls.')
+    if str(geometry or '').lower() == 'pipe':
+        lower = None
+    return lower, upper
+
+
+def wall_distance(y, side, walls):
+    """Distance from the wall, for the cells apply_half_channel(y, side) keeps.
+
+    `walls` is wall_positions()'s (lower, upper). For a half-domain side the
+    result starts at the selected wall and increases toward the centreline
+    (or a pipe's axis), so every side and geometry plots on one axis;
+    'average' is measured from the lower wall, which is where
+    symmetric_average's output is indexed from. With side None the full
+    profile is kept and each cell is measured to its nearer wall.
+    """
+    y = np.asarray(y, dtype=float)
+    lower, upper = walls
+    if side is None:
+        to_upper = upper - y
+        return to_upper if lower is None else np.minimum(y - lower, to_upper)
+    if side not in HALF_SIDES:
+        raise ValueError("side must be 'lower', 'upper', 'average', 'wall' or None.")
+    if side == 'average':
+        return apply_half_channel(y, 'lower') - lower
+    half = apply_half_channel(y, side)
+    return upper - half if side in ('upper', 'wall') else half - lower
+
+
 def apply_half_channel(arr, side, axis=0):
     """Reduce an array to one half of the channel along the wall-normal `axis`.
 
@@ -1063,12 +1239,17 @@ def apply_half_channel(arr, side, axis=0):
     wall and the two can be compared on one axis), and 'average' returns the
     symmetric average of both. An odd number of wall-normal cells puts the
     centreline row in both halves (half_len = n - n//2), matching the
-    profile-plotting convention. `side` of None returns `arr` unchanged.
+    profile-plotting convention. 'wall' is a pipe's: its radius already runs
+    from the axis to the one wall, so the whole profile is kept and flipped
+    to start at the wall (see half_domain_side). `side` of None returns
+    `arr` unchanged.
     """
     if side is None:
         return arr
-    if side not in ('lower', 'upper', 'average'):
-        raise ValueError("side must be 'lower', 'upper', 'average' or None.")
+    if side not in HALF_SIDES:
+        raise ValueError("side must be 'lower', 'upper', 'average', 'wall' or None.")
+    if side == 'wall':
+        return np.flip(arr, axis=axis)
 
     if side == 'average':
         return symmetric_average(arr, axis=axis)
@@ -1090,8 +1271,8 @@ def window_average(data_t1, data_t2, t1, t2, stat_start_timestep):
     else:
         return (stat_t2 * data_t2 - stat_t1 * data_t1) / t_diff
 
-def analytical_laminar_mhd_prof(case, Re_bulk, Re_tau):
-    u_tau = Re_tau / Re_bulk
+def analytical_laminar_mhd_prof(case, Re_ref, Re_tau):
+    u_tau = Re_tau / Re_ref
     y = np.linspace(0, 1, 100) * Re_tau
     prof = (((Re_tau * u_tau)/(case * np.tanh(case)))*((1 - np.cosh(case * (1 - y)))/np.cosh(case)) + 1.225)
     return prof
@@ -1133,27 +1314,26 @@ def compute_force_components(xdmf_data_dict, y_coords, average_z=False, average_
     def grad_x(field):
         if field is None:
             return None
-        if average_x:
+        axis = field_axes(field, average_x, average_z)['x']
+        if axis is None:
             return np.zeros_like(field)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, axis=1)
-        return np.gradient(field, axis=2)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     def grad_y(field):
         if field is None:
             return None
+        axis = field_axes(field, average_x, average_z)['y']
         if field.ndim == 1:
             return np.gradient(field, y_coords)
-        if average_z:  # 2D (ny, nx)
-            return np.gradient(field, y_coords, axis=0)
-        return np.gradient(field, y_coords, axis=1)  # 3D (nz, ny, nx)
+        return np.gradient(field, y_coords, axis=axis)
 
     def grad_z(field):
         if field is None:
             return None
-        if average_z:
+        axis = field_axes(field, average_x, average_z)['z']
+        if axis is None:
             return np.zeros_like(field)
-        return np.gradient(field, axis=0)  # 3D (nz, ny, nx)
+        return np.gradient(field, axis=axis)
 
     pr = get_var('pr')
     dens = get_var('f')
@@ -1179,7 +1359,7 @@ def compute_buoyancy(gravity_direction, u_ref, l_ref, force_dict):
     """
     G_CONST = 9.81
     g = np.array(gravity_direction)
-    dens = force_dict['f']
+    dens = force_dict.get('f')
 
     if dens is None:
         return {f'buoyancy_{i}': None for i in (1, 2, 3)}
@@ -1427,7 +1607,7 @@ def compute_integral_length_scale(rho, sep_coords, cutoff='first_zero'):
         sep_index = np.arange(rho.shape[0]).reshape((-1,) + (1,) * (rho.ndim - 1))
         rho = np.where(sep_index < first_crossing, rho, 0.0)
 
-    return np.trapezoid(rho, sep, axis=0)
+    return _trapezoid(rho, sep, axis=0)
 
 
 # =====================================================================================================================================================

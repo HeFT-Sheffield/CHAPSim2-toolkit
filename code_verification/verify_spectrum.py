@@ -28,8 +28,8 @@ import numpy as np
 
 # Add parent dir so we can import operations / turb_stats
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import operations as op
-from turb_stats import (Config, SpectrumComputer, TurbulenceStatsPipeline, PlotConfig,
+from chapsim2_toolkit import operations as op
+from chapsim2_toolkit.turb_stats import (Config, SpectrumComputer, TurbulenceStatsPipeline, PlotConfig,
                         TurbulencePlotter, create_data_loader)
 from verify_two_point_correlation import _attribute_xml, _write_bin, _write_xdmf
 

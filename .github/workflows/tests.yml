@@ -1,0 +1,133 @@
+name: tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest version setup.py claims, and a current one. NumPy 2.0
+        # renamed trapz to trapezoid, so the two ends of this range exercise
+        # genuinely different library behaviour.
+        python-version: ['3.9', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # pyvista is only needed by the 3D rendering, which no test drives.
+          # ttkbootstrap is needed: the GUI tests below build real widgets.
+          # It is only installable on 3.10+, so on 3.9 those tests skip -
+          # which is the truth about the GUI, not a gap in the testing.
+          # pandas is in install_requires and thermal_BC_calc needs it.
+          pip install numpy matplotlib tqdm pandas pytest \
+                      "ttkbootstrap>=2.0.0; python_version>='3.10'"
+
+      - name: Install a virtual display for the GUI tests
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Install pyvista for the 3D tests
+        # Only on the newest job: pyvista pulls in VTK, which is a large
+        # download, and the 3D code has no version-specific behaviour to
+        # exercise twice. It renders off-screen through software GL, so it
+        # needs no display of its own.
+        if: matrix.python-version == '3.12'
+        run: pip install "pyvista>=0.32.0"
+
+      - name: Report the versions actually under test
+        run: python -c "import numpy, matplotlib; print('numpy', numpy.__version__, '| matplotlib', matplotlib.__version__)"
+
+      - name: Tests
+        env:
+          MPLBACKEND: Agg
+        # The tests that read CHAPSim2's own output skip themselves when the
+        # solver is not checked out, which on a runner it never is. The rest
+        # build their cases on disk and need nothing external.
+        #
+        # Under xvfb so the GUI tests run rather than skip. They need a real
+        # display to build a widget tree, and skipping is silent - without
+        # this they would report green having checked nothing.
+        run: xvfb-run -a python -m pytest tests -v
+
+      - name: Verify the budget terms against reference data
+        env:
+          MPLBACKEND: Agg
+        run: python code_verification/verify_budget_terms.py
+
+      - name: Verify the two-point correlation against analytic cases
+        env:
+          MPLBACKEND: Agg
+        run: python code_verification/verify_two_point_correlation.py
+
+      - name: Check every module imports without a display
+        env:
+          MPLBACKEND: Agg
+        run: |
+          for module in utils operations turb_stats slice monitor_points \
+                        mesh_analysis quick_turb_stats help_content \
+                        stitch_domains fluid_properties case_consistency \
+                        thermal_BC_calc provenance; do
+            python -c "import chapsim2_toolkit.$module" || exit 1
+          done
+          # gui needs ttkbootstrap, which is not installable on every version
+          # in the matrix. Checked where it is.
+          python -c "import ttkbootstrap" 2>/dev/null \
+            && python -c "import chapsim2_toolkit.gui" \
+            || echo "skipped gui: ttkbootstrap not installed on this Python"
+
+      - name: Build a wheel and install it in a clean environment
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install dist/*.whl
+
+      - name: Check the installed package works from outside the repository
+        env:
+          MPLBACKEND: Agg
+        # The failure this catches is data files that do not ship: the NIST
+        # tables and the reference datasets are read by __file__-relative
+        # path, which works in a checkout whether or not they are packaged.
+        run: |
+          mkdir -p /tmp/elsewhere && cd /tmp/elsewhere
+          /tmp/wheeltest/bin/python -c "
+          from chapsim2_toolkit import fluid_properties as fp, turb_stats as ts
+          import os
+          w = fp.get_fluid_properties('scp_water')
+          assert w.T_min == 573.15, 'NIST water table did not ship'
+          assert os.path.isdir(ts.ReferenceData._REF_DATA_DIR), 'Reference_Data did not ship'
+          assert os.path.isfile(ts.BUNDLED_CONFIG), 'config template did not ship'
+          print('installed package reads its data from', os.path.dirname(w.path))
+          "
+          /tmp/wheeltest/bin/chapsim2-turbstats --help > /dev/null
+          /tmp/wheeltest/bin/python -m chapsim2_toolkit.turb_stats --help > /dev/null
+
+      - name: Check the checkout workflow still works without installing
+        env:
+          MPLBACKEND: Agg
+        # python turb_stats.py has to keep working for people running from a
+        # clone on a cluster, which is most of the use.
+        run: |
+          python turb_stats.py --help > /dev/null
+          python -c "import runpy, sys; sys.argv=['mesh_analysis.py']" 
+
+      - name: Check the bundled runner works without pytest
+        env:
+          MPLBACKEND: Agg
+        # run_tests.py falls back to its own runner on machines where
+        # installing pytest is awkward, which is most clusters. That path
+        # has to keep working, so it is exercised explicitly.
+        run: xvfb-run -a python run_tests.py --no-pytest -q
